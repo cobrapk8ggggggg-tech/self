@@ -441,4 +441,4 @@ async def on_message(m: discord.Message):
                     await run_commands(commands, m.guild)
 
 # ================= RUN =================
-client.run(USER_TOKEN, bot=False)
+client.run(USER_TOKEN)
