@@ -19,6 +19,9 @@ USER_TOKEN = os.getenv("USER_TOKEN")
 DEEPSEEK_TOKEN = os.getenv("DEEPSEEK_TOKEN")
 ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
+# ================= سياقات المستخدمين (لكل مستخدم جلسة خاصة) =================
+user_sessions = {}   # user_id -> {"session_id": str, "parent_message_id": str}
+
 # ================= DeepSeek API helpers =================
 RAILWAY_SERVER_URL = "https://web-production-c09dc.up.railway.app"
 POW_API_URL = f"{RAILWAY_SERVER_URL}/pow"
@@ -99,23 +102,30 @@ async def create_chat_session(token):
             else:
                 raise Exception('Invalid session response: ' + json.dumps(data))
 
-async def deepseek_simple_completion(system_content, user_content, search_enabled=False, thinking_enabled=False):
+async def deepseek_simple_completion(system_content, user_content, session_id=None, parent_message_id=None, search_enabled=False, thinking_enabled=False):
     """
-    يجمع system_content و user_content في prompt واحد ويرسل إلى DeepSeek،
-    ويعيد النص المستخرج من التدفق.
+    يجمع system_content و user_content في prompt واحد ويرسل إلى DeepSeek.
+    - إذا لم تُعطَ session_id يتم إنشاء جلسة جديدة.
+    - parent_message_id يستخدم لاستمرار المحادثة (إذا كان None تعتبر رسالة مستقلة).
+    تعيد: (النص, session_id_المستخدم, parent_message_id_الجديد)
     """
     prompt = f"{system_content}\n\nUser: {user_content}" if system_content else user_content
     token = DEEPSEEK_TOKEN
     if not token:
         raise Exception("DEEPSEEK_TOKEN not set")
 
-    session_id = await create_chat_session(token)
+    # إنشاء جلسة إذا لم توجد
+    new_session_created = False
+    if session_id is None:
+        session_id = await create_chat_session(token)
+        new_session_created = True
+
     pow_data = await get_fresh_pow(token)
     headers = build_headers(pow_data['pow_response'], token)
 
     payload = {
         "chat_session_id": session_id,
-        "parent_message_id": None,
+        "parent_message_id": parent_message_id,
         "prompt": prompt,
         "ref_file_ids": [],
         "thinking_enabled": thinking_enabled,
@@ -130,8 +140,14 @@ async def deepseek_simple_completion(system_content, user_content, search_enable
     url = "https://chat.deepseek.com/api/v0/chat/completion"
 
     full_text = ""
+    new_parent_message_id = None
+    first_chunk_processed = False
+
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise Exception(f"DeepSeek API error {resp.status}: {text}")
             buffer = ""
             async for chunk in resp.content.iter_chunked(1024):
                 text = chunk.decode('utf-8')
@@ -143,6 +159,11 @@ async def deepseek_simple_completion(system_content, user_content, search_enable
                         data_str = line[6:]
                         try:
                             data = json.loads(data_str)
+                            # أول قطعة تحمل معرفات الجلسة
+                            if not first_chunk_processed:
+                                if 'request_message_id' in data and 'response_message_id' in data:
+                                    new_parent_message_id = data['response_message_id']
+                                    first_chunk_processed = True
                             v = data.get('v')
                             if v:
                                 if isinstance(v, str):
@@ -154,10 +175,12 @@ async def deepseek_simple_completion(system_content, user_content, search_enable
                                             full_text += frag.get('content', '')
                         except:
                             pass
-            # معالجة آخر سطر إن وجد
+            # معالجة البقية في buffer
             if buffer.startswith("data: "):
                 try:
                     data = json.loads(buffer[6:])
+                    if not first_chunk_processed and 'request_message_id' in data and 'response_message_id' in data:
+                        new_parent_message_id = data['response_message_id']
                     v = data.get('v')
                     if isinstance(v, str):
                         full_text += v
@@ -167,7 +190,7 @@ async def deepseek_simple_completion(system_content, user_content, search_enable
                                 full_text += frag.get('content', '')
                 except:
                     pass
-    return full_text.strip()
+    return full_text.strip(), session_id, new_parent_message_id
 
 # ================= INTENTS =================
 client = discord.Client()
@@ -291,38 +314,18 @@ ban_members, manage_messages, manage_guild, moderate_members, etc.)
 When in doubt, prefer specific permissions over "administrator": true.
 """
 
+# دوال مساعدة تستخدم DeepSeek لاستخراج المعرفات
 async def disor_get_category(guild: discord.Guild, target: str):
     server_categories = {}
     for category in guild.categories:
         server_categories[category.name] = {"id": str(category.id)}
 
-    default_categories = {
-        "System": {"id": "1234567899"},
-        "Generals": {"id": "1321462575"},
-        "Moderators": {"id": "432534654"},
-    }
-
     system_msg = "You going to take a name of category and search for one in the list and return its id ONLY"
     user_msg = f"{target}\ncategories: {server_categories}"
-    # إضافة أمثلة لتحسين الدقة
-    example = f"""Example:
-User: سويلي روم اسمه chat و حطه بكاتجوري General
-categories: {default_categories}
-Assistant: 1321462575
-
-User: هذا الكاتجوري ايديه: 1321462575
-categories: {default_categories}
-Assistant: 1321462575
-
-User: دز الروم للكاتجوري مال المشرفين
-categories: {default_categories}
-Assistant: 432534654
-
-Now the real request: {user_msg}"""
-    full_prompt = f"{system_msg}\n{example}"
-    response = await deepseek_simple_completion(None, full_prompt)  # نمرر كمحتوى واحد
+    full_prompt = f"{system_msg}\n{user_msg}"
+    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)  # طلب مستقل
     try:
-        cat_id = int(response.strip())
+        cat_id = int(text.strip())
         return guild.get_channel(cat_id)
     except:
         return None
@@ -332,31 +335,12 @@ async def disor_get_channel(guild: discord.Guild, target: str):
     for channel in guild.channels:
         server_channels[channel.name] = {"id": str(channel.id)}
 
-    default_channels = {
-        "chat": {"id": "1234567899"},
-        "voice 1": {"id": "1321462575"},
-        "welcomes": {"id": "432534654"},
-    }
-
-    system_msg = "You going to take a name of category and search for one in the list and return its id ONLY"
-    example = f"""Example:
-User: شات العام
-channels: {default_channels}
-Assistant: 1234567899
-
-User: الروم الصوتي مال رقم 1
-channels: {default_channels}
-Assistant: 1321462575
-
-User: welcomes | ترحيب
-channels: {default_channels}
-Assistant: 432534654
-
-Now the real request: {target}\nchannels: {server_channels}"""
-    full_prompt = f"{system_msg}\n{example}"
-    response = await deepseek_simple_completion(None, full_prompt)
+    system_msg = "You going to take a name of channel and search for one in the list and return its id ONLY"
+    user_msg = f"{target}\nchannels: {server_channels}"
+    full_prompt = f"{system_msg}\n{user_msg}"
+    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)
     try:
-        ch_id = int(response.strip())
+        ch_id = int(text.strip())
         return guild.get_channel(ch_id)
     except:
         return None
@@ -369,31 +353,12 @@ async def disor_get_role(guild: discord.Guild, target: str):
             "color": str(role.color)
         }
 
-    default_roles = {
-        "vip": {"id": "1234567899", "color": "#ff0000"},
-        "admin": {"id": "1321462575", "color": "#00ff00"},
-        "member": {"id": "432534654", "color": "#0000ff"},
-    }
-
     system_msg = "You going to take a name of role and search for one in the list and return its id ONLY"
-    example = f"""Example:
-User: الرول الأحمر
-roles: {default_roles}
-Assistant: 1234567899
-
-User: الادمن | admin
-roles: {default_roles}
-Assistant: 1321462575
-
-User: العضو او ممبر
-roles: {default_roles}
-Assistant: 432534654
-
-Now the real request: {target}\nroles: {server_roles}"""
-    full_prompt = f"{system_msg}\n{example}"
-    response = await deepseek_simple_completion(None, full_prompt)
+    user_msg = f"{target}\nroles: {server_roles}"
+    full_prompt = f"{system_msg}\n{user_msg}"
+    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)
     try:
-        role_id = int(response.strip())
+        role_id = int(text.strip())
         return guild.get_role(role_id)
     except:
         return None
@@ -406,35 +371,16 @@ async def disor_get_member(guild: discord.Guild, target: str):
             "global_name": str(member.global_name)
         }
 
-    default_members = {
-        "ahmed": {"id": "1234567899", "global_name": "Hamada"},
-        "mostafa": {"id": "1321462575", "global_name": "MOSTAFA IZ"},
-        "mohammed": {"id": "432534654", "global_name": "Zigzag 0C"},
-    }
-
     sorted_members = ""
     for member in server_members:
         sorted_members += f"{member}: {server_members[member]['global_name']} ({server_members[member]['id']})\n"
 
     system_msg = "You going to take a name of member and search for one in the list and return its id ONLY\n- Don't chat with me, return ID ONLY!\n- be direct and return ID\n- if you found two or more members with the same name choose one of them randomly"
-    example = f"""Example:
-User: حمادة
-Members: {default_members}
-Assistant: 1234567899
-
-User: mostafa iz
-Members: {default_members}
-Assistant: 1321462575
-
-User: Zigzag
-Members: {default_members}
-Assistant: 432534654
-
-Now the real request: {target}\nMembers:\n{sorted_members}"""
-    full_prompt = f"{system_msg}\n{example}"
-    response = await deepseek_simple_completion(None, full_prompt)
+    user_msg = f"{target}\nMembers:\n{sorted_members}"
+    full_prompt = f"{system_msg}\n{user_msg}"
+    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)
     try:
-        member_id = int(response.strip())
+        member_id = int(text.strip())
         return guild.get_member(member_id)
     except:
         return None
@@ -448,11 +394,15 @@ async def run_commands(commands: list, guild: discord.Guild):
                 if command[key]["Type"] == "text":
                     channel = await guild.create_text_channel(name=command[key]["Name"])
                     if command[key]["Category"] is not None:
-                        await channel.edit(category=await disor_get_category(guild, command[key]["Category"]))
+                        cat = await disor_get_category(guild, command[key]["Category"])
+                        if cat:
+                            await channel.edit(category=cat)
                 elif command[key]["Type"] == "voice":
                     channel = await guild.create_voice_channel(name=command[key]["Name"])
                     if command[key]["Category"] is not None:
-                        await channel.edit(category=await disor_get_category(guild, command[key]["Category"]))
+                        cat = await disor_get_category(guild, command[key]["Category"])
+                        if cat:
+                            await channel.edit(category=cat)
 
             elif key.startswith("DeleteChannel"):
                 print(f"Running command: Deleting channel")
@@ -493,70 +443,72 @@ async def on_message(m: discord.Message):
     if m.author.id == client.user.id:
         return
 
-    if m.channel.id == ALLOWED_CHANNEL_ID:
-        if client.user.mention in m.content:
-            final = m.content.replace(client.user.mention, "").strip()
+    if m.channel.id != ALLOWED_CHANNEL_ID:
+        return
 
-            async with m.channel.typing():
-                # تصنيف النية
-                intent_system = f"""Look at the user message and see if he wants to talk or want action, also if the user is asking questions return 'USER_IS_MESSAGING'
+    if client.user.mention not in m.content:
+        return
+
+    user_id = m.author.id
+    final = m.content.replace(client.user.mention, "").strip()
+
+    # أمر إعادة تعيين المحادثة
+    if final.startswith("!newchat") or final.strip() == "محادثة جديدة":
+        if user_id in user_sessions:
+            del user_sessions[user_id]
+        await m.reply("تم بدء محادثة جديدة، السياق السابق ألغي.")
+        return
+
+    # ضمان وجود جلسة للمستخدم (سيتم ملؤها عند الحاجة)
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"session_id": None, "parent_message_id": None}
+    us = user_sessions[user_id]
+
+    async with m.channel.typing():
+        # ==== تصنيف النية (بدون التأثير على السياق) ====
+        intent_system = f"""Look at the user message and see if he wants to talk or want action, also if the user is asking questions return 'USER_IS_MESSAGING'
 About you: {AiAbout}
 DON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' or 'USER_WANTS_ACTION' ONLY"""
+        intent_prompt = f"User message: {final}"
+        intent_res, _, _ = await deepseek_simple_completion(intent_system, intent_prompt,
+                                                           session_id=us["session_id"],
+                                                           parent_message_id=None)  # مستقل
+        intent = intent_res.strip()
 
-                intent_prompt = f"""Examples:
-User: شلونك يمعود
-Assistant: USER_IS_MESSAGING
+        if intent.startswith("USER_IS_MESSAGING"):
+            # ==== دردشة عادية ====
+            chat_system = f"تحدث إلى المستخدم وساعده أو قدم له أي مساعدة يطلبها...\nAbout you: {AiAbout}\nServer Information:\n{return_server_info(m.guild)}"
+            chat_res, new_sid, new_parent = await deepseek_simple_completion(
+                chat_system, final,
+                session_id=us["session_id"],
+                parent_message_id=us["parent_message_id"]
+            )
+            # تحديث الجلسة
+            us["session_id"] = new_sid
+            us["parent_message_id"] = new_parent
+            await m.reply(chat_res)
 
-User: ممكن تطرد هذا الشخص من السيرفر
-Assistant: USER_WANTS_ACTION
-
-User: الو
-Assistant: USER_IS_MESSAGING
-
-User: سويلي روم اسمه chat
-Assistant: USER_WANTS_ACTION
-
-User: هلا
-Assistant: USER_IS_MESSAGING
-
-Now the real request: {final}"""
-
-                intent_res = await deepseek_simple_completion(intent_system, intent_prompt)
-                intent = intent_res.strip()
-
-                if intent.startswith("USER_IS_MESSAGING"):
-                    chat_system = f"تحدث إلى المستخدم وساعده أو قدم له أي مساعدة يطلبها...\nAbout you: {AiAbout}\nServer Information:\n{return_server_info(m.guild)}"
-                    chat_res = await deepseek_simple_completion(chat_system, final)
-                    await m.reply(chat_res)
-
-                elif intent.startswith("USER_WANTS_ACTION"):
-                    ack_system = f"""You tell the user you will TRY to do the action, but you're not sure if it will succeed.
+        elif intent.startswith("USER_WANTS_ACTION"):
+            # ==== طلب إجراء ====
+            ack_system = f"""You tell the user you will TRY to do the action, but you're not sure if it will succeed.
 - Say things like 'let me try' or 'give me a sec' or 'on it'
 - NEVER say 'done' or 'completed' because you don't know yet
 - Keep it short, one sentence only
 About you: {AiAbout}"""
-                    ack_prompt = f"""Examples:
-User: سويلي روم اسمه chat
-Assistant: خليني اشوف، ثواني
+            ack_prompt = f"User wants: {final}"
+            ack_res, _, _ = await deepseek_simple_completion(ack_system, ack_prompt,
+                                                            session_id=us["session_id"],
+                                                            parent_message_id=None)  # مستقل
+            await m.reply(ack_res)
 
-User: طرد هذا الشخص
-Assistant: دعني احاول
-
-User: شيل هذا الروم
-Assistant: تمام، لحظة
-
-Now: {final}"""
-                    ack_res = await deepseek_simple_completion(ack_system, ack_prompt)
-                    await m.reply(ack_res)
-
-                    # استخراج JSON الأوامر
-                    parser_system = f"""Take the user input and reply with JSON only NEVER CHANGE THE JSON FORMAT.
+            # ==== تحليل الأمر إلى JSON ====
+            parser_system = f"""Take the user input and reply with JSON only NEVER CHANGE THE JSON FORMAT.
 
 If the user asks for something NOT in your available skills/actions (check "About you" below), respond with:
 {{"NoSkill0": {{"Reply": "رد طبيعي هنا يوضح إنك معرفش تعمل الطلب ده"}}}}
 
 Format: {{"CreateChannel0": {{"Name": "...", "Type": "..."}}}}
- 
+
 ⚠️ NEVER leave a field empty ("") or omit a key if information is missing.
 If information is not provided or not found in Server Information, use these defaults:
 - "Name": generate a reasonable name based on context, NEVER leave empty
@@ -571,54 +523,23 @@ if the user asked you to put a role higher than role, just type in 'Position' ke
 if the user asked you to put a role lower than role, just type in 'Position' key the target role Pos - 1
 
 About you: {AiAbout}"""
-                    parser_prompt = f"""Examples:
-User: سويلي روم اسمه chat
-Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": null}}}}
-
-User: سويلي روم اسمه chat و روم ثاني اسمه welcome
-Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": null}}, "CreateChannel1": {{"Name": "welcome", "Type": "text", "Category": null}}}}
-
-User: سويلي روم صوتي اسمه voice 1
-Assistant: {{"CreateChannel0": {{"Name": "voice 1", "Type": "voice", "Category": null}}}}
-
-User: سويلي روم اسمه chat و حطه بكاتجوري General
-Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": "General"}}}}
-
-User: شيل الروم اللي اسمه chat
-Assistant: {{"DeleteChannel0": {{"Name": "chat"}}}}
-
-User: غير اسم الروم chat لـ welcome
-Assistant: {{"EditChannelName0": {{"Channel": "chat", "Name": "welcome"}}}}
-
-User: غير اسم الروم اللي اسمه chat لـ welcome
-Assistant: {{"EditChannelName0": {{"Channel": "chat", "Name": "welcome"}}}}
-
-User: سويلي رتبة اسمها VIP لونها اخضر و اعطيها صلاحية add_reactions
-Assistant: {{"CreateRole0": {{"Name": "VIP", "Color": "#00FF00", "Position": 0, "Perms": {{"add_reactions": true}}}}}}
-
-User: انطي العضو محمد رتبة الادمن اللي لونها ازرق
-Assistant: {{"GrantRole0": {{"Name": "ادمن اللي لونها ازرق", "Member": "محمد"}}}}
-
-User: بلكي اعمل كاتجوري اسمها Generals
-Assistant: {{"CreateCategory0": {{"Name": "Generals"}}}}
-
-Now: {final}"""
-
-                    parser_res = await deepseek_simple_completion(parser_system, parser_prompt)
-                    print(parser_res)
-
-                    try:
-                        raw = json.loads(parser_res)
-                        commands = []
-                        for key, value in raw.items():
-                            if key.startswith("NoSkill"):
-                                await m.reply(raw[key]["Reply"])
-                            else:
-                                commands.append({key: value})
-                        if commands:
-                            await run_commands(commands, m.guild)
-                    except Exception as e:
-                        await m.reply(f"حدث خطأ في معالجة الأمر: {e}")
+            parser_prompt = f"User request: {final}"
+            parser_res, _, _ = await deepseek_simple_completion(parser_system, parser_prompt,
+                                                               session_id=us["session_id"],
+                                                               parent_message_id=None)  # مستقل
+            print("Parser output:", parser_res)
+            try:
+                raw = json.loads(parser_res)
+                commands = []
+                for key, value in raw.items():
+                    if key.startswith("NoSkill"):
+                        await m.reply(raw[key]["Reply"])
+                    else:
+                        commands.append({key: value})
+                if commands:
+                    await run_commands(commands, m.guild)
+            except Exception as e:
+                await m.reply(f"حدث خطأ في معالجة الأمر: {e}")
 
 # ================= RUN =================
 client.run(USER_TOKEN)
