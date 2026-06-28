@@ -1,148 +1,169 @@
-import discord
+"""
+Disor Bot — v3.0 "Agentic"
+═══════════════════════════════════════════════════════════════
+المعمارية:
+  • Agent Loop حقيقي — النموذج يقرر متى يستدعي أداة ومتى يرد
+  • أدوات منفصلة لكل نوع بيانات (channels / roles / members / categories)
+  • session واحد للمحادثة العادية + stateless للعمليات
+  • لا رسائل تأكيد — ينفذ ثم يرد بالنتيجة مباشرة
+  • البوت يرى معلومات المستخدم الكاملة (نكنيم، يوزر، ID)
+  • البوت يعرف نفسه باسمه الحقيقي لا باليوزر
+═══════════════════════════════════════════════════════════════
+"""
+
 import asyncio
 import json
 import os
 import random
-import time
 import re
+import time
 from datetime import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
-import aiohttp
 
-# ═══════════════════════════════════════════
-#                  MongoDB
-# ═══════════════════════════════════════════
-MONGODB_URI = os.getenv("MONGODB_URI")
+import aiohttp
+import discord
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# ──────────────────────────────────────────────────────────────
+#  ENV
+# ──────────────────────────────────────────────────────────────
+MONGODB_URI        = os.getenv("MONGODB_URI")
+USER_TOKEN         = os.getenv("USER_TOKEN")
+DEEPSEEK_TOKEN     = os.getenv("DEEPSEEK_TOKEN")
+ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
+
+# ──────────────────────────────────────────────────────────────
+#  MongoDB
+# ──────────────────────────────────────────────────────────────
 mongo_client = AsyncIOMotorClient(MONGODB_URI)
 db = mongo_client["disor_db"]
-history_col = db["history"]
 
-# ═══════════════════════════════════════════
-#                    KEYS
-# ═══════════════════════════════════════════
-USER_TOKEN       = os.getenv("USER_TOKEN")
-DEEPSEEK_TOKEN   = os.getenv("DEEPSEEK_TOKEN")
-ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
-PREFIX           = os.getenv("PREFIX", "!")  # البادئة الافتراضية
+# ──────────────────────────────────────────────────────────────
+#  Discord Intents
+# ──────────────────────────────────────────────────────────────
+intents = discord.Intents.default()
+intents.members         = True   # لازم لـ guild.members
+intents.message_content = True   # لازم لقراءة الرسائل
+intents.guilds          = True
+client = discord.Client(intents=intents)
 
-# ═══════════════════════════════════════════
-#               User Sessions
-# ═══════════════════════════════════════════
-user_sessions = {}   # user_id -> {"session_id": str, "parent_message_id": str}
-session_lock  = asyncio.Lock()
+# ──────────────────────────────────────────────────────────────
+#  User Sessions  { user_id: {"session_id": str|None, "parent_message_id": str|None} }
+# ──────────────────────────────────────────────────────────────
+user_sessions: dict[int, dict] = {}
+session_lock = asyncio.Lock()
 
-# ═══════════════════════════════════════════
-#           DeepSeek API Helpers
-# ═══════════════════════════════════════════
-RAILWAY_SERVER_URL = "https://web-production-c09dc.up.railway.app"
-POW_API_URL        = f"{RAILWAY_SERVER_URL}/pow"
+# ──────────────────────────────────────────────────────────────
+#  DeepSeek API — Low-level helpers
+# ──────────────────────────────────────────────────────────────
+RAILWAY_URL = "https://web-production-c09dc.up.railway.app"
+POW_URL     = f"{RAILWAY_URL}/pow"
 
-def generate_device_id():
-    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    return ''.join(random.choice(chars) for _ in range(88))
 
-def generate_rangers_id():
+def _device_id() -> str:
+    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return "".join(random.choice(chars) for _ in range(88))
+
+
+def _rangers_id() -> str:
     ts = int(time.time() * 1000)
-    rv = random.randint(1000000000, 9999999999)
+    rv = random.randint(1_000_000_000, 9_999_999_999)
     return str((ts << 32) | rv)
 
-def get_tz_offset():
-    offset = -datetime.now().astimezone().utcoffset().total_seconds()
-    return str(int(offset))
 
-def build_headers(pow_response, token):
+def _tz_offset() -> str:
+    return str(int(-datetime.now().astimezone().utcoffset().total_seconds()))
+
+
+def _build_headers(pow_response: str, token: str) -> dict:
     return {
-        'User-Agent'               : 'DeepSeek/2.1.1 Android/36',
-        'Accept'                   : 'application/json',
-        'Accept-Encoding'          : 'gzip',
-        'Content-Type'             : 'application/json',
-        'x-client-platform'        : 'android',
-        'x-client-version'         : '2.1.1',
-        'x-client-locale'          : 'ar',
-        'x-client-bundle-id'       : 'com.deepseek.chat',
-        'x-rangers-id'             : generate_rangers_id(),
-        'x-client-timezone-offset' : get_tz_offset(),
-        'x-device-id'              : generate_device_id(),
-        'x-os-version'             : '30',
-        'x-app-version'            : '2.1.1',
-        'Authorization'            : f'Bearer {token}',
-        'X-DS-PoW-Response'        : pow_response,
-        'accept-charset'           : 'UTF-8',
+        "User-Agent"               : "DeepSeek/2.1.1 Android/36",
+        "Accept"                   : "application/json",
+        "Accept-Encoding"          : "gzip",
+        "Content-Type"             : "application/json",
+        "x-client-platform"        : "android",
+        "x-client-version"         : "2.1.1",
+        "x-client-locale"          : "ar",
+        "x-client-bundle-id"       : "com.deepseek.chat",
+        "x-rangers-id"             : _rangers_id(),
+        "x-client-timezone-offset" : _tz_offset(),
+        "x-device-id"              : _device_id(),
+        "x-os-version"             : "30",
+        "x-app-version"            : "2.1.1",
+        "Authorization"            : f"Bearer {token}",
+        "X-DS-PoW-Response"        : pow_response,
+        "accept-charset"           : "UTF-8",
     }
 
-def clean_response(text: str) -> str:
-    """إزالة كلمات FINISHEDSEARCH وFINISHED وأي markdown json backticks"""
-    text = re.sub(r'\bFINISHEDSEARCH\b', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bFINISHED\b',       '', text, flags=re.IGNORECASE)
-    # إزالة ```json ... ``` أو ``` ... ```
-    text = re.sub(r'```(?:json)?\s*([\s\S]*?)```', r'\1', text)
+
+async def _get_pow() -> dict:
+    token = DEEPSEEK_TOKEN
+    async with aiohttp.ClientSession() as s:
+        for url in [f"{POW_URL}?authorization={token}", POW_URL]:
+            try:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        pr = data.get("x_ds_pow_response") or data.get("pow_response")
+                        if pr:
+                            return {"pow_response": pr, "pow_data": data.get("solved_json")}
+            except Exception:
+                continue
+    raise RuntimeError("POW fetch failed after all retries")
+
+
+async def _new_session() -> str:
+    token = DEEPSEEK_TOKEN
+    url   = "https://chat.deepseek.com/api/v0/chat_session/create"
+    hdrs  = {
+        "x-client-bundle-id"       : "com.deepseek.chat",
+        "x-client-platform"        : "web",
+        "x-client-version"         : "2.0.0",
+        "x-client-locale"          : "en_US",
+        "x-client-timezone-offset" : _tz_offset(),
+        "x-app-version"            : "2.0.0",
+        "Authorization"            : f"Bearer {token}",
+        "Content-Type"             : "application/json",
+        "Accept"                   : "*/*",
+    }
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, headers=hdrs, json={}) as r:
+            data = await r.json()
+            sid  = (
+                data.get("data", {})
+                    .get("biz_data", {})
+                    .get("chat_session", {})
+                    .get("id")
+            )
+            if not sid:
+                raise RuntimeError(f"Bad session response: {data}")
+            return sid
+
+
+def _strip(text: str) -> str:
+    """تنظيف مخلفات DeepSeek من النص"""
+    text = re.sub(r"\bFINISHEDSEARCH\b|\bFINISHED\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"```(?:json)?\s*([\s\S]*?)```", r"\1", text)
     return text.strip()
 
-async def get_fresh_pow(token):
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"{POW_API_URL}?authorization={token}"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    async with session.get(POW_API_URL) as fallback:
-                        if fallback.status != 200:
-                            raise Exception(f"POW failed: {fallback.status}")
-                        data = await fallback.json()
-                else:
-                    data = await resp.json()
-            if not data.get('pow_response') and not data.get('x_ds_pow_response'):
-                raise Exception("Incomplete POW response")
-            return {
-                'pow_response': data.get('x_ds_pow_response') or data['pow_response'],
-                'pow_data'    : data.get('solved_json')
-            }
-    except Exception as e:
-        print(f"[POW Error] {e}")
-        raise
 
-async def create_chat_session(token):
-    url = "https://chat.deepseek.com/api/v0/chat_session/create"
-    headers = {
-        'x-client-bundle-id'       : 'com.deepseek.chat',
-        'x-client-platform'        : 'web',
-        'x-client-version'         : '2.0.0',
-        'x-client-locale'          : 'en_US',
-        'x-client-timezone-offset' : get_tz_offset(),
-        'x-app-version'            : '2.0.0',
-        'Authorization'            : f'Bearer {token}',
-        'Content-Type'             : 'application/json',
-        'Accept'                   : '*/*'
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json={}) as resp:
-            data = await resp.json()
-            sid = data.get('data', {}).get('biz_data', {}).get('chat_session', {}).get('id')
-            if sid:
-                return sid
-            raise Exception('Invalid session response: ' + json.dumps(data))
-
-async def deepseek_completion(
-    system_content,
-    user_content,
-    session_id=None,
-    parent_message_id=None,
-):
+async def _stream_ds(
+    prompt: str,
+    session_id: str | None = None,
+    parent_message_id: str | None = None,
+) -> tuple[str, str, str | None]:
     """
-    استدعاء DeepSeek مع دعم session متواصل.
-    يرجع: (full_text, session_id, new_parent_message_id)
+    استدعاء DeepSeek (streaming).
+    يرجع: (text, session_id, new_parent_message_id)
     """
     token = DEEPSEEK_TOKEN
     if not token:
-        raise Exception("DEEPSEEK_TOKEN not set")
+        raise RuntimeError("DEEPSEEK_TOKEN not set")
 
-    if session_id is None:
-        session_id = await create_chat_session(token)
+    if not session_id:
+        session_id = await _new_session()
 
-    pow_data = await get_fresh_pow(token)
-    headers  = build_headers(pow_data['pow_response'], token)
-
-    # دمج الـ system مع prompt (DeepSeek لا يدعم system role مباشرة)
-    prompt = f"{system_content}\n\nUser: {user_content}" if system_content else user_content
+    pow_d = await _get_pow()
+    hdrs  = _build_headers(pow_d["pow_response"], token)
 
     payload = {
         "chat_session_id"  : session_id,
@@ -154,103 +175,360 @@ async def deepseek_completion(
         "model_type"       : "default",
         "action"           : None,
         "preempt"          : False,
-        "pow"              : pow_data['pow_data'],
-        "stream"           : True
+        "pow"              : pow_d["pow_data"],
+        "stream"           : True,
     }
 
-    url       = "https://chat.deepseek.com/api/v0/chat/completion"
     full_text = ""
-    new_parent_message_id = None
+    new_pmid  = None
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            "https://chat.deepseek.com/api/v0/chat/completion",
+            headers=hdrs,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as resp:
             if resp.status != 200:
-                text = await resp.text()
-                raise Exception(f"DeepSeek API error {resp.status}: {text}")
+                raise RuntimeError(f"DS {resp.status}: {await resp.text()}")
 
-            buffer = ""
+            buf = ""
             async for chunk in resp.content.iter_chunked(1024):
-                buffer += chunk.decode('utf-8')
-                while '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
+                buf += chunk.decode("utf-8")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
                     line = line.strip()
                     if not line.startswith("data: "):
                         continue
-                    data_str = line[6:]
                     try:
-                        data = json.loads(data_str)
-                        if new_parent_message_id is None and 'response_message_id' in data:
-                            new_parent_message_id = data['response_message_id']
-                        v = data.get('v')
+                        d = json.loads(line[6:])
+                        if new_pmid is None and "response_message_id" in d:
+                            new_pmid = d["response_message_id"]
+                        v = d.get("v")
                         if isinstance(v, str):
                             full_text += v
-                        elif isinstance(v, dict) and 'response' in v:
-                            for frag in v['response'].get('fragments', []):
-                                if frag.get('type') == 'RESPONSE':
-                                    full_text += frag.get('content', '')
+                        elif isinstance(v, dict):
+                            for frag in v.get("response", {}).get("fragments", []):
+                                if frag.get("type") == "RESPONSE":
+                                    full_text += frag.get("content", "")
                     except Exception:
                         pass
 
-    return clean_response(full_text), session_id, new_parent_message_id
+    return _strip(full_text), session_id, new_pmid
 
 
-# ═══════════════════════════════════════════════════════
-#  deepseek_one_shot — استدعاء مستقل بدون session محفوظ
-#  مناسب للعمليات التحليلية (parser, intent, lookup)
-# ═══════════════════════════════════════════════════════
-async def deepseek_one_shot(system_content: str, user_content: str) -> str:
-    text, _, _ = await deepseek_completion(system_content, user_content)
-    return text.strip()
+# ──────────────────────────────────────────────────────────────
+#  Guild Lookup Helpers
+# ──────────────────────────────────────────────────────────────
+
+def _find_channel(guild: discord.Guild, name: str) -> discord.abc.GuildChannel | None:
+    nl = name.lower().strip()
+    for ch in guild.channels:
+        if ch.name.lower() == nl:
+            return ch
+    for ch in guild.channels:
+        if nl in ch.name.lower():
+            return ch
+    return None
 
 
-# ═══════════════════════════════════════════
-#              Discord Client
-# ═══════════════════════════════════════════
-# ملاحظة: استخدام client = discord.Client() فقط لأن الإصدار القديم لا يدعم Intents
-# الحساب الشخصي يقرأ الرسائل والأعضاء بشكل طبيعي بدون الحاجة لتفعيل intents خاصة
-client = discord.Client()
+def _find_category(guild: discord.Guild, name: str) -> discord.CategoryChannel | None:
+    nl = name.lower().strip()
+    for c in guild.categories:
+        if c.name.lower() == nl:
+            return c
+    for c in guild.categories:
+        if nl in c.name.lower():
+            return c
+    return None
 
-# ═══════════════════════════════════════════
-#                 Account Info
-# ═══════════════════════════════════════════
-def get_account_info():
-    """تجلب معلومات الحساب المستخدم كسيلف بوت"""
-    name = client.user.name if client.user else "Disor"
-    uid  = client.user.id   if client.user else 0
-    return name, uid
 
-def build_ai_about(account_name: str) -> str:
-    return f"""
-أنت مساعد ديسكورد ذكي، تعمل من خلال حساب {account_name}.
-- تتكلم بالعربي فقط، وتستخدم اللهجة العراقية العامية
-- تساعد المستخدمين في إدارة سيرفراتهم على ديسكورد
-- أنت لست بوتاً رسمياً، بل مساعد شخصي عبر حساب عادي
+def _find_role(guild: discord.Guild, name: str) -> discord.Role | None:
+    nl = name.lower().strip()
+    for r in guild.roles:
+        if r.name.lower() == nl:
+            return r
+    for r in guild.roles:
+        if nl in r.name.lower():
+            return r
+    return None
 
-المهام اللي تقدر تسويها:
-1. إنشاء روم نصي (text channel)
-2. إنشاء روم صوتي (voice channel)
-3. إنشاء كاتيكوري (category)
-4. حذف روم
-5. تغيير اسم روم
-6. إنشاء رتبة (role) مع صلاحياتها ولونها
-7. إعطاء رتبة لعضو (grant role)
-8. حذف رتبة (delete role)
-9. كيك عضو (kick member)
-10. بان عضو (ban member)
-11. تغيير نكنيم عضو (change nickname)
 
-الأسماء المستعارة:
-- روم/شات/غرفة/قناة/شانل = Channel
-- فويس/صوتي = Voice Channel
-- رول/رتبة = Role
-- كاتيكوري/تصنيف/قسم = Category
+def _find_member(guild: discord.Guild, query: str) -> discord.Member | None:
+    ql = query.lower().strip()
+    for m in guild.members:
+        if m.name.lower() == ql:
+            return m
+        if m.nick and m.nick.lower() == ql:
+            return m
+        if m.global_name and m.global_name.lower() == ql:
+            return m
+    for m in guild.members:
+        if ql in m.name.lower():
+            return m
+        if m.nick and ql in m.nick.lower():
+            return m
+        if m.global_name and ql in m.global_name.lower():
+            return m
+    return None
 
-⚠️ مهم جداً بخصوص الـ administrator permission:
-لا تعطي administrator إلا لو المستخدم طلبه صراحة.
-إذا قال "أدمن رول" بس ما ذكر administrator تحديداً، استخدم صلاحيات محددة مثل:
-manage_channels, manage_roles, kick_members, ban_members, manage_messages, manage_guild, moderate_members
 
-Discord Permissions المتاحة:
+# ──────────────────────────────────────────────────────────────
+#  TOOLS  — كل أداة ترجع dict
+# ──────────────────────────────────────────────────────────────
+
+def tool_get_channels(guild: discord.Guild) -> dict:
+    rows = []
+    for ch in guild.channels:
+        if isinstance(ch, discord.CategoryChannel):
+            continue
+        rows.append({
+            "id"      : ch.id,
+            "name"    : ch.name,
+            "type"    : "text" if isinstance(ch, discord.TextChannel) else "voice",
+            "category": ch.category.name if ch.category else None,
+        })
+    return {"channels": rows}
+
+
+def tool_get_categories(guild: discord.Guild) -> dict:
+    return {
+        "categories": [
+            {"id": c.id, "name": c.name, "position": c.position}
+            for c in guild.categories
+        ]
+    }
+
+
+def tool_get_roles(guild: discord.Guild) -> dict:
+    return {
+        "roles": [
+            {
+                "id"      : r.id,
+                "name"    : r.name,
+                "color"   : str(r.color),
+                "position": r.position,
+                "perms"   : [p for p, v in r.permissions if v],
+            }
+            for r in guild.roles
+        ]
+    }
+
+
+def tool_get_members(guild: discord.Guild, query: str | None = None) -> dict:
+    members = list(guild.members)
+    if query:
+        ql      = query.lower()
+        members = [
+            m for m in members
+            if ql in m.name.lower()
+            or (m.nick and ql in m.nick.lower())
+            or (m.global_name and ql in m.global_name.lower())
+        ]
+    return {
+        "members": [
+            {
+                "id"         : m.id,
+                "username"   : m.name,
+                "global_name": m.global_name,
+                "nickname"   : m.nick,
+                "display"    : m.display_name,
+                "roles"      : [r.name for r in m.roles if r.name != "@everyone"],
+            }
+            for m in members[:60]
+        ]
+    }
+
+
+async def tool_execute(guild: discord.Guild, action: str, params: dict) -> dict:
+    """ينفذ عملية واحدة ويرجع نتيجتها"""
+    try:
+        a = action.lower().strip()
+
+        # ── create_category ──────────────────────────────────
+        if a == "create_category":
+            cat = await guild.create_category(name=params["name"])
+            return {"ok": True, "msg": f"✅ تم إنشاء الكاتيكوري **{cat.name}**", "id": cat.id}
+
+        # ── create_channel ───────────────────────────────────
+        elif a == "create_channel":
+            cat_obj = None
+            if params.get("category"):
+                cat_obj = _find_category(guild, params["category"])
+
+            ch_type = params.get("type", "text").lower()
+            if ch_type == "voice":
+                ch = await guild.create_voice_channel(name=params["name"], category=cat_obj)
+            else:
+                ch = await guild.create_text_channel(name=params["name"], category=cat_obj)
+
+            loc = f" تحت **{cat_obj.name}**" if cat_obj else ""
+            return {"ok": True, "msg": f"✅ تم إنشاء الروم **{ch.name}**{loc}", "id": ch.id}
+
+        # ── delete_channel ───────────────────────────────────
+        elif a == "delete_channel":
+            ch = _find_channel(guild, params["name"])
+            if not ch:
+                return {"ok": False, "msg": f"❌ ما لقيت روم اسمه **{params['name']}**"}
+            name = ch.name
+            await ch.delete()
+            return {"ok": True, "msg": f"✅ تم حذف الروم **{name}**"}
+
+        # ── rename_channel ───────────────────────────────────
+        elif a == "rename_channel":
+            ch = _find_channel(guild, params["channel"])
+            if not ch:
+                return {"ok": False, "msg": f"❌ ما لقيت روم اسمه **{params['channel']}**"}
+            old = ch.name
+            await ch.edit(name=params["new_name"])
+            return {"ok": True, "msg": f"✅ تم تغيير اسم **{old}** → **{params['new_name']}**"}
+
+        # ── create_role ──────────────────────────────────────
+        elif a == "create_role":
+            try:
+                color = discord.Colour.from_str(params.get("color", "#99AAB5"))
+            except Exception:
+                color = discord.Colour.default()
+
+            perms = discord.Permissions(**params.get("perms", {}))
+            role  = await guild.create_role(
+                name=params["name"], colour=color, permissions=perms
+            )
+            pos = params.get("position", 0)
+            if pos and pos > 0:
+                try:
+                    await guild.edit_role_positions(positions={role: pos})
+                except Exception as pe:
+                    print(f"[role pos] {pe}")
+
+            return {"ok": True, "msg": f"✅ تم إنشاء الرتبة **{role.name}**", "id": role.id}
+
+        # ── delete_role ──────────────────────────────────────
+        elif a == "delete_role":
+            role = _find_role(guild, params["name"])
+            if not role:
+                return {"ok": False, "msg": f"❌ ما لقيت رتبة اسمها **{params['name']}**"}
+            name = role.name
+            await role.delete()
+            return {"ok": True, "msg": f"✅ تم حذف الرتبة **{name}**"}
+
+        # ── edit_role ────────────────────────────────────────
+        elif a == "edit_role":
+            role = _find_role(guild, params["name"])
+            if not role:
+                return {"ok": False, "msg": f"❌ ما لقيت رتبة اسمها **{params['name']}**"}
+            kw = {}
+            if "new_name" in params:
+                kw["name"] = params["new_name"]
+            if "color" in params:
+                try:
+                    kw["colour"] = discord.Colour.from_str(params["color"])
+                except Exception:
+                    pass
+            if "perms" in params:
+                kw["permissions"] = discord.Permissions(**params["perms"])
+            await role.edit(**kw)
+            return {"ok": True, "msg": f"✅ تم تعديل الرتبة **{role.name}**"}
+
+        # ── grant_role ───────────────────────────────────────
+        elif a == "grant_role":
+            member = _find_member(guild, params["member"])
+            role   = _find_role(guild, params["role"])
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو **{params['member']}**"}
+            if not role:
+                return {"ok": False, "msg": f"❌ ما لقيت الرتبة **{params['role']}**"}
+            await member.add_roles(role)
+            return {"ok": True, "msg": f"✅ أعطيت **{member.display_name}** رتبة **{role.name}**"}
+
+        # ── revoke_role ──────────────────────────────────────
+        elif a == "revoke_role":
+            member = _find_member(guild, params["member"])
+            role   = _find_role(guild, params["role"])
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو **{params['member']}**"}
+            if not role:
+                return {"ok": False, "msg": f"❌ ما لقيت الرتبة **{params['role']}**"}
+            await member.remove_roles(role)
+            return {"ok": True, "msg": f"✅ سحبت رتبة **{role.name}** من **{member.display_name}**"}
+
+        # ── kick_member ──────────────────────────────────────
+        elif a == "kick_member":
+            member = _find_member(guild, params["member"])
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو **{params['member']}**"}
+            name = member.display_name
+            await member.kick(reason=params.get("reason", "—"))
+            return {"ok": True, "msg": f"✅ تم كيك **{name}**"}
+
+        # ── ban_member ───────────────────────────────────────
+        elif a == "ban_member":
+            member = _find_member(guild, params["member"])
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو **{params['member']}**"}
+            name = member.display_name
+            await member.ban(reason=params.get("reason", "—"), delete_message_days=0)
+            return {"ok": True, "msg": f"✅ تم بان **{name}**"}
+
+        # ── change_nickname ──────────────────────────────────
+        elif a == "change_nickname":
+            member = _find_member(guild, params["member"])
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو **{params['member']}**"}
+            old = member.display_name
+            await member.edit(nick=params["nickname"])
+            return {"ok": True, "msg": f"✅ تم تغيير نكنيم **{old}** → **{params['nickname']}**"}
+
+        else:
+            return {"ok": False, "msg": f"⚠️ عملية غير معروفة: {action}"}
+
+    except discord.Forbidden:
+        return {"ok": False, "msg": f"⛔ البوت ما عنده صلاحية تنفيذ **{action}**"}
+    except discord.HTTPException as e:
+        return {"ok": False, "msg": f"❌ خطأ Discord في **{action}**: {e.text}"}
+    except Exception as e:
+        print(f"[tool_execute] {action} → {e}")
+        return {"ok": False, "msg": f"❌ خطأ: {e}"}
+
+
+# ──────────────────────────────────────────────────────────────
+#  AGENT SYSTEM PROMPT
+# ──────────────────────────────────────────────────────────────
+
+def build_system(bot_name: str) -> str:
+    return f"""أنت {bot_name}، بوت ديسكورد احترافي يدير سيرفرات.
+تتكلم بالعربية باللهجة العراقية العامية.
+تعرّف نفسك دائماً بـ "{bot_name}" مو باليوزر.
+تخاطب المستخدم باسمه (النكنيم إذا عنده، وإلا الاسم العالمي).
+
+══════════════════════════════════
+الأدوات المتاحة
+══════════════════════════════════
+استخدم الأدوات فقط عند الحاجة — لا ترسل كل بيانات السيرفر مع كل رسالة.
+
+get_channels     → يجيب قائمة الرومات
+get_categories   → يجيب قائمة الكاتيكوريات
+get_roles        → يجيب قائمة الرتب
+get_members      → يجيب قائمة الأعضاء (اختياري: query للبحث)
+execute          → ينفذ عملية في السيرفر
+
+══════════════════════════════════
+العمليات المتاحة في execute
+══════════════════════════════════
+create_category   | params: {{name}}
+create_channel    | params: {{name, type:"text|voice", category?:"اسم"}}
+delete_channel    | params: {{name}}
+rename_channel    | params: {{channel:"الاسم الحالي", new_name:"الجديد"}}
+create_role       | params: {{name, color?:"#hex", position?:N, perms?:{{perm:true}}}}
+delete_role       | params: {{name}}
+edit_role         | params: {{name, new_name?, color?, perms?}}
+grant_role        | params: {{member:"اسم|ID", role:"اسم"}}
+revoke_role       | params: {{member:"اسم|ID", role:"اسم"}}
+kick_member       | params: {{member:"اسم|ID", reason?:"..."}}
+ban_member        | params: {{member:"اسم|ID", reason?:"..."}}
+change_nickname   | params: {{member:"اسم|ID", nickname:"..."}}
+
+Discord Permissions:
 administrator, manage_channels, manage_roles, manage_expressions,
 view_audit_log, manage_webhooks, manage_guild, create_instant_invite,
 change_nickname, manage_nicknames, kick_members, ban_members,
@@ -261,499 +539,234 @@ mention_everyone, manage_messages, manage_threads, read_message_history,
 send_tts_messages, use_application_commands, send_voice_messages,
 connect, speak, stream, use_embedded_activities, use_voice_activation,
 priority_speaker, mute_members, deafen_members, move_members,
-request_to_speak, use_soundboard, use_external_sounds
-"""
+use_soundboard, use_external_sounds
 
-AiAbout = ""
+⚠️ administrator فقط إذا طلبه المستخدم صراحة بالكلام — لا تستنتجه من اسم الرتبة
 
+══════════════════════════════════
+شكل الرد — JSON فقط
+══════════════════════════════════
+لاستدعاء أداة:
+{{"tool": "get_channels"}}
+{{"tool": "get_members", "params": {{"query": "اسم"}}}}
 
-# ═══════════════════════════════════════════
-#           Server Info Builder
-# ═══════════════════════════════════════════
-def get_server_info(guild: discord.Guild) -> str:
-    if not guild:
-        return "لا يوجد سيرفر"
+لتنفيذ عملية:
+{{"tool": "execute", "action": "create_channel", "params": {{"name": "...", "type": "text"}}}}
 
-    lines = [f"السيرفر: {guild.name} (ID: {guild.id})"]
+للرد النهائي:
+{{"reply": "ردك بالعراقي هنا"}}
 
-    # كاتيكوريات
-    lines.append("\n📁 الكاتيكوريات:")
-    for cat in guild.categories:
-        lines.append(f"  • {cat.name}  |  ID: {cat.id}")
-
-    # قنوات
-    lines.append("\n💬 الرومات:")
-    for ch in guild.channels:
-        t = "نصي" if isinstance(ch, discord.TextChannel) else "صوتي" if isinstance(ch, discord.VoiceChannel) else "كاتيكوري" if isinstance(ch, discord.CategoryChannel) else "أخرى"
-        cat_name = ch.category.name if ch.category else "بدون كاتيكوري"
-        lines.append(f"  • [{t}] {ch.name}  |  ID: {ch.id}  |  كاتيكوري: {cat_name}")
-
-    # رتب
-    lines.append("\n🎖️ الرتب (من الأعلى للأدنى):")
-    for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
-        lines.append(f"  • Pos:{role.position}  {role.name}  |  ID: {role.id}  |  لون: {role.color}")
-
-    # أعضاء
-    lines.append(f"\n👥 عدد الأعضاء: {guild.member_count}")
-
-    return "\n".join(lines)
+قواعد Agent Loop:
+1. لا ترسل رسائل تأكيد — نفذ مباشرة ثم رد بالنتيجة
+2. إذا احتجت بيانات السيرفر استخدم الأداة المناسبة، لا تخترع البيانات
+3. إذا نفذت أكثر من عملية، نفذهم واحدة واحدة وانتظر نتيجة كل واحدة
+4. بعد آخر عملية أو عند الإجابة على سؤال → رد بـ reply
+5. إذا المستخدم يتكلم أو يسأل سؤال عام → رد مباشرة بـ reply بدون أدوات
+6. الرد النهائي يكون مختصراً ومباشراً"""
 
 
-# ═══════════════════════════════════════════════════════
-#  Lookup Helpers — تستخدم ID مباشرة بدون AI عشان موثوق
-# ═══════════════════════════════════════════════════════
-def find_channel_by_name(guild: discord.Guild, name: str) -> discord.abc.GuildChannel | None:
-    """بحث عن قناة بالاسم (case-insensitive, partial match)"""
-    name_lower = name.lower().strip()
-    # بحث exact أول
-    for ch in guild.channels:
-        if ch.name.lower() == name_lower:
-            return ch
-    # ثم partial
-    for ch in guild.channels:
-        if name_lower in ch.name.lower():
-            return ch
-    return None
-
-def find_category_by_name(guild: discord.Guild, name: str) -> discord.CategoryChannel | None:
-    name_lower = name.lower().strip()
-    for cat in guild.categories:
-        if cat.name.lower() == name_lower:
-            return cat
-    for cat in guild.categories:
-        if name_lower in cat.name.lower():
-            return cat
-    return None
-
-def find_role_by_name(guild: discord.Guild, name: str) -> discord.Role | None:
-    name_lower = name.lower().strip()
-    for role in guild.roles:
-        if role.name.lower() == name_lower:
-            return role
-    for role in guild.roles:
-        if name_lower in role.name.lower():
-            return role
-    return None
-
-def find_member_by_name(guild: discord.Guild, name: str) -> discord.Member | None:
-    name_lower = name.lower().strip()
-    for member in guild.members:
-        if member.name.lower() == name_lower:
-            return member
-        if member.display_name.lower() == name_lower:
-            return member
-    for member in guild.members:
-        if name_lower in member.name.lower() or name_lower in member.display_name.lower():
-            return member
-    return None
+# ──────────────────────────────────────────────────────────────
+#  AGENT LOOP
+# ──────────────────────────────────────────────────────────────
+MAX_STEPS = 10
 
 
-# ═══════════════════════════════════════════
-#         تنفيذ الأوامر — run_commands
-# ═══════════════════════════════════════════
-async def run_commands(commands: list, guild: discord.Guild) -> list[str]:
+async def run_agent(
+    guild: discord.Guild,
+    user_msg: str,
+    user_info: str,
+    bot_name: str,
+    session_id: str | None,
+    parent_message_id: str | None,
+) -> tuple[str, str, str | None]:
     """
-    ينفذ قائمة الأوامر ويرجع قائمة رسائل النتائج (نجاح/فشل).
-    """
-    results = []
+    Agent Loop:
+     step 1 : إرسال الرسالة للنموذج
+     step N : النموذج يستدعي أداة → ننفذ → نرجع النتيجة
+     step X : النموذج يرد بـ reply → نرجعه للمستخدم
 
-    for command in commands:
-        for key, value in command.items():
-            await asyncio.sleep(0.5)
+    يرجع: (final_reply, session_id, parent_message_id)
+    """
+    system       = build_system(bot_name)
+    cur_sid      = session_id
+    cur_pmid     = parent_message_id
+    # الرسالة الأولى = system + user_info + طلب المستخدم
+    cur_prompt   = f"{system}\n\n{user_info}\n\nUser: {user_msg}"
+    is_tool_turn = False   # الدورة الأولى محادثة عادية
+
+    for step in range(MAX_STEPS):
+        print(f"[Agent {step+1}/{MAX_STEPS}] sending...")
+        try:
+            raw, cur_sid, cur_pmid = await _stream_ds(
+                cur_prompt, cur_sid, cur_pmid
+            )
+        except Exception as e:
+            print(f"[Agent] DS error at step {step+1}: {e}")
+            return f"⚠️ خطأ في الاتصال: {e}", cur_sid, cur_pmid
+
+        print(f"[Agent {step+1}] raw: {raw[:400]}")
+
+        # ── محاولة parse JSON ──
+        parsed = None
+        m = re.search(r"\{[\s\S]*\}", raw)
+        if m:
             try:
+                parsed = json.loads(m.group())
+            except Exception:
+                pass
 
-                # ────────── CreateCategory ──────────
-                if key.startswith("CreateCategory"):
-                    cat = await guild.create_category(name=value["Name"])
-                    results.append(f"✅ تم إنشاء الكاتيكوري **{cat.name}**")
+        # إذا ما فيه JSON → رد نصي مباشر (محادثة عادية)
+        if parsed is None:
+            return raw, cur_sid, cur_pmid
 
-                # ────────── CreateChannel ──────────
-                elif key.startswith("CreateChannel"):
-                    ch_type  = value.get("Type", "text").lower()
-                    ch_name  = value["Name"]
-                    cat_name = value.get("Category", "")
+        # ── reply نهائي ──
+        if "reply" in parsed:
+            return parsed["reply"], cur_sid, cur_pmid
 
-                    # إيجاد الكاتيكوري
-                    category_obj = None
-                    if cat_name:
-                        category_obj = find_category_by_name(guild, cat_name)
+        # ── أداة ──
+        tool = parsed.get("tool", "")
+        if not tool:
+            return raw, cur_sid, cur_pmid
 
-                    if ch_type == "voice":
-                        ch = await guild.create_voice_channel(name=ch_name, category=category_obj)
-                    else:
-                        ch = await guild.create_text_channel(name=ch_name, category=category_obj)
+        # تنفيذ الأداة
+        result: dict = {}
 
-                    loc = f" تحت **{category_obj.name}**" if category_obj else ""
-                    results.append(f"✅ تم إنشاء الروم **{ch.name}**{loc}")
+        if tool == "get_channels":
+            result = tool_get_channels(guild)
 
-                # ────────── DeleteChannel ──────────
-                elif key.startswith("DeleteChannel"):
-                    ch = find_channel_by_name(guild, value["Name"])
-                    if ch:
-                        name = ch.name
-                        await ch.delete()
-                        results.append(f"✅ تم حذف الروم **{name}**")
-                    else:
-                        results.append(f"❌ ما لقيت روم اسمه **{value['Name']}**")
+        elif tool == "get_categories":
+            result = tool_get_categories(guild)
 
-                # ────────── EditChannelName ──────────
-                elif key.startswith("EditChannelName"):
-                    ch = find_channel_by_name(guild, value["Channel"])
-                    if ch:
-                        old = ch.name
-                        await ch.edit(name=value["Name"])
-                        results.append(f"✅ تم تغيير اسم **{old}** إلى **{value['Name']}**")
-                    else:
-                        results.append(f"❌ ما لقيت روم اسمه **{value['Channel']}**")
+        elif tool == "get_roles":
+            result = tool_get_roles(guild)
 
-                # ────────── CreateRole ──────────
-                elif key.startswith("CreateRole"):
-                    color_str = value.get("Color", "#99AAB5")
-                    try:
-                        color = discord.Colour.from_str(color_str)
-                    except Exception:
-                        color = discord.Colour.default()
+        elif tool == "get_members":
+            query  = (parsed.get("params") or {}).get("query")
+            result = tool_get_members(guild, query)
 
-                    perms_dict = value.get("Perms", {})
-                    perms = discord.Permissions(**perms_dict)
+        elif tool == "execute":
+            action = parsed.get("action", "")
+            params = parsed.get("params", {})
+            result = await tool_execute(guild, action, params)
 
-                    role = await guild.create_role(
-                        name=value["Name"],
-                        colour=color,
-                        permissions=perms
-                    )
+        else:
+            result = {"error": f"أداة غير معروفة: {tool}"}
 
-                    # ضبط الموضع إذا حُدد
-                    pos = value.get("Position", 0)
-                    if pos and pos > 0:
-                        try:
-                            await guild.edit_role_positions(positions={role: pos})
-                        except Exception as pe:
-                            print(f"[Position Error] {pe}")
+        print(f"[Agent {step+1}] tool='{tool}' result={str(result)[:300]}")
 
-                    results.append(f"✅ تم إنشاء الرتبة **{role.name}**")
+        # نرجع نتيجة الأداة للنموذج في الدورة القادمة
+        cur_prompt = f"[TOOL_RESULT for '{tool}']\n{json.dumps(result, ensure_ascii=False)}\n\nاستكمل."
 
-                # ────────── DeleteRole ──────────
-                elif key.startswith("DeleteRole"):
-                    role = find_role_by_name(guild, value["Name"])
-                    if role:
-                        name = role.name
-                        await role.delete()
-                        results.append(f"✅ تم حذف الرتبة **{name}**")
-                    else:
-                        results.append(f"❌ ما لقيت رتبة اسمها **{value['Name']}**")
-
-                # ────────── GrantRole ──────────
-                elif key.startswith("GrantRole"):
-                    member = find_member_by_name(guild, value["Member"])
-                    role   = find_role_by_name(guild, value["Name"])
-                    if not member:
-                        results.append(f"❌ ما لقيت العضو **{value['Member']}**")
-                    elif not role:
-                        results.append(f"❌ ما لقيت الرتبة **{value['Name']}**")
-                    else:
-                        await member.add_roles(role)
-                        results.append(f"✅ تم إعطاء **{member.display_name}** رتبة **{role.name}**")
-
-                # ────────── RevokeRole ──────────
-                elif key.startswith("RevokeRole"):
-                    member = find_member_by_name(guild, value["Member"])
-                    role   = find_role_by_name(guild, value["Name"])
-                    if not member:
-                        results.append(f"❌ ما لقيت العضو **{value['Member']}**")
-                    elif not role:
-                        results.append(f"❌ ما لقيت الرتبة **{value['Name']}**")
-                    else:
-                        await member.remove_roles(role)
-                        results.append(f"✅ تم سحب رتبة **{role.name}** من **{member.display_name}**")
-
-                # ────────── KickMember ──────────
-                elif key.startswith("KickMember"):
-                    member = find_member_by_name(guild, value["Member"])
-                    if not member:
-                        results.append(f"❌ ما لقيت العضو **{value['Member']}**")
-                    else:
-                        reason = value.get("Reason", "بدون سبب")
-                        name   = member.display_name
-                        await member.kick(reason=reason)
-                        results.append(f"✅ تم كيك **{name}** — السبب: {reason}")
-
-                # ────────── BanMember ──────────
-                elif key.startswith("BanMember"):
-                    member = find_member_by_name(guild, value["Member"])
-                    if not member:
-                        results.append(f"❌ ما لقيت العضو **{value['Member']}**")
-                    else:
-                        reason = value.get("Reason", "بدون سبب")
-                        name   = member.display_name
-                        await member.ban(reason=reason, delete_message_days=0)
-                        results.append(f"✅ تم بان **{name}** — السبب: {reason}")
-
-                # ────────── ChangeNickname ──────────
-                elif key.startswith("ChangeNickname"):
-                    member = find_member_by_name(guild, value["Member"])
-                    if not member:
-                        results.append(f"❌ ما لقيت العضو **{value['Member']}**")
-                    else:
-                        old  = member.display_name
-                        await member.edit(nick=value["Nickname"])
-                        results.append(f"✅ تم تغيير نكنيم **{old}** إلى **{value['Nickname']}**")
-
-                # ────────── EditRolePerms ──────────
-                elif key.startswith("EditRolePerms"):
-                    role = find_role_by_name(guild, value["Name"])
-                    if not role:
-                        results.append(f"❌ ما لقيت الرتبة **{value['Name']}**")
-                    else:
-                        perms = discord.Permissions(**value.get("Perms", {}))
-                        await role.edit(permissions=perms)
-                        results.append(f"✅ تم تعديل صلاحيات رتبة **{role.name}**")
-
-                else:
-                    results.append(f"⚠️ أمر غير معروف: {key}")
-
-            except discord.Forbidden:
-                results.append(f"⛔ ما عندي صلاحية لتنفيذ **{key}** — تأكد إن الحساب عنده الصلاحيات الكافية")
-            except discord.HTTPException as e:
-                results.append(f"❌ خطأ في تنفيذ **{key}**: {e.text}")
-            except Exception as e:
-                results.append(f"❌ خطأ غير متوقع في **{key}**: {str(e)}")
-                print(f"[run_commands Error] {key}: {e}")
-
-    return results
+    return "✅ تم.", cur_sid, cur_pmid
 
 
-# ═══════════════════════════════════════════
-#              Events
-# ═══════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────
+#  Discord Events
+# ──────────────────────────────────────────────────────────────
+
 @client.event
 async def on_ready():
-    global AiAbout
-    name, uid = get_account_info()
-    AiAbout   = build_ai_about(name)
-    print(f"✅ Logged in as: {name} ({uid})")
+    name = client.user.display_name or client.user.name
+    uid  = client.user.id
+    print(f"✅ {name} ({uid}) ready")
     print(f"📡 Guilds: {[g.name for g in client.guilds]}")
     try:
         await mongo_client.admin.command("ping")
-        print("✅ MongoDB connected.")
+        print("✅ MongoDB OK")
     except Exception as e:
-        print(f"❌ MongoDB error: {e}")
+        print(f"❌ MongoDB: {e}")
 
-
-# ═══════════════════════════════════════════
-#           Message Handler
-# ═══════════════════════════════════════════
-PARSER_SYSTEM = """
-أنت محلل أوامر. مهمتك تحويل طلب المستخدم إلى JSON فقط.
-
-القواعد:
-1. رد بـ JSON فقط — لا نص، لا شرح، لا backticks
-2. إذا الطلب ما يتعلق بالأوامر المتاحة رد بـ: {"NoSkill0": {"Reply": "رد بالعراقي يوضح إنك ما تقدر تسوي الطلب"}}
-3. ممكن تدمج أكثر من أمر في نفس الرد
-
-الأوامر المتاحة وصيغتها:
-
-CreateCategory0:  {"Name": "اسم الكاتيكوري"}
-CreateChannel0:   {"Name": "اسم الروم", "Type": "text|voice", "Category": "اسم الكاتيكوري أو فاضي"}
-DeleteChannel0:   {"Name": "اسم الروم"}
-EditChannelName0: {"Channel": "الاسم الحالي", "Name": "الاسم الجديد"}
-CreateRole0:      {"Name": "اسم الرتبة", "Color": "#RRGGBB", "Position": رقم, "Perms": {"اسم_الصلاحية": true/false}}
-DeleteRole0:      {"Name": "اسم الرتبة"}
-GrantRole0:       {"Member": "اسم العضو", "Name": "اسم الرتبة"}
-RevokeRole0:      {"Member": "اسم العضو", "Name": "اسم الرتبة"}
-KickMember0:      {"Member": "اسم العضو", "Reason": "السبب"}
-BanMember0:       {"Member": "اسم العضو", "Reason": "السبب"}
-ChangeNickname0:  {"Member": "اسم العضو", "Nickname": "النكنيم الجديد"}
-EditRolePerms0:   {"Name": "اسم الرتبة", "Perms": {"اسم_الصلاحية": true/false}}
-
-ملاحظات:
-- الأرقام في نهاية الأمر (0,1,2...) تميز بين الأوامر المتعددة من نفس النوع
-- مثال لأوامر متعددة: {"CreateChannel0": {...}, "CreateChannel1": {...}, "CreateRole0": {...}}
-- إذا ما ذُكر لون للرول استخدم "#99AAB5"
-- إذا ما ذُكر موضع للرول استخدم 0
-- لا تضع administrator في الـ Perms إلا إذا طلبه المستخدم صراحة
-
-⚠️ رد بـ JSON فقط — لا أي نص آخر
-"""
 
 @client.event
 async def on_message(m: discord.Message):
-    # تجاهل رسائل الحساب نفسه (السيلف بوت يتجاهل نفسه)
+    # تجاهل رسائل البوت نفسه
     if m.author.id == client.user.id:
         return
 
-    # القناة المسموح بها فقط
+    # القناة المسموح بها
     if m.channel.id != ALLOWED_CHANNEL_ID:
         return
 
-    content = m.content
-
-    # التحقق من أن الرسالة موجهة للسيلف بوت
-    # إما أن تبدأ بالبادئة أو أن تكون رداً على رسالة من الحساب نفسه
-    starts_with_prefix = content.startswith(PREFIX)
-    is_reply_to_self = (
-        m.reference and
-        m.reference.resolved and
-        isinstance(m.reference.resolved, discord.Message) and
-        m.reference.resolved.author.id == client.user.id
+    # منشن أو رد على البوت
+    is_mention = client.user.mentioned_in(m) and not m.mention_everyone
+    is_reply   = (
+        m.reference
+        and m.reference.resolved
+        and isinstance(m.reference.resolved, discord.Message)
+        and m.reference.resolved.author.id == client.user.id
     )
-
-    if not (starts_with_prefix or is_reply_to_self):
+    if not (is_mention or is_reply):
         return
 
-    # استخراج النص بدون البادئة
-    if starts_with_prefix:
-        final = content[len(PREFIX):].strip()
-    else:
-        final = content.strip()
+    # استخراج النص الصافي
+    content = m.content
+    for mention in m.mentions:
+        content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+    final = content.strip()
 
     if not final:
-        await m.reply("شقصدك؟ قولي وين أساعدك 😄")
+        await m.reply("وين أساعدك؟ 😄")
         return
 
-    # ───────── أمر إعادة المحادثة ─────────
-    if final.lower() in ("!newchat", "محادثة جديدة", "!reset"):
+    # أوامر التحكم
+    if final.lower() in ("!reset", "!newchat", "محادثة جديدة"):
         async with session_lock:
             user_sessions.pop(m.author.id, None)
-        await m.reply("✅ تم مسح السياق، محادثة جديدة من الصفر!")
+        await m.reply("✅ تمت إعادة تعيين المحادثة!")
         return
 
-    user_id = m.author.id
+    # ── معلومات المستخدم الكاملة ──
+    author       = m.author
+    nick         = getattr(author, "nick", None)
+    display_name = nick or author.global_name or author.name
+    user_info    = (
+        f"[معلومات المستخدم]\n"
+        f"  النكنيم في السيرفر : {nick or '—'}\n"
+        f"  الاسم العالمي      : {author.global_name or '—'}\n"
+        f"  اليوزرنيم          : @{author.name}\n"
+        f"  المعرف (ID)        : {author.id}\n"
+        f"  ناديه بـ           : {display_name}\n"
+    )
 
-    # استرجاع أو إنشاء session
+    # الـ session
     async with session_lock:
-        if user_id not in user_sessions:
-            user_sessions[user_id] = {"session_id": None, "parent_message_id": None}
-        us = user_sessions[user_id]
+        if m.author.id not in user_sessions:
+            user_sessions[m.author.id] = {"session_id": None, "parent_message_id": None}
+        us = user_sessions[m.author.id]
 
-    server_info = get_server_info(m.guild)
+    bot_name = client.user.display_name or client.user.name
 
     async with m.channel.typing():
         try:
-            # ══════════════════════════════════════
-            #  خطوة 1: تحديد النية (ACTION أو CHAT)
-            # ══════════════════════════════════════
-            intent_sys = f"""أنت محدد نية. رد بكلمة واحدة فقط: ACTION أو CHAT
-ACTION = المستخدم يريد تنفيذ عملية في السيرفر (إنشاء روم، حذف، إنشاء رتبة، إلخ)
-CHAT   = المستخدم يتكلم أو يسأل سؤال أو يريد معلومة
+            reply, new_sid, new_pmid = await run_agent(
+                guild             = m.guild,
+                user_msg          = final,
+                user_info         = user_info,
+                bot_name          = bot_name,
+                session_id        = us["session_id"],
+                parent_message_id = us["parent_message_id"],
+            )
 
-{AiAbout}
+            async with session_lock:
+                us["session_id"]        = new_sid
+                us["parent_message_id"] = new_pmid
 
-السيرفر الحالي:
-{server_info}"""
-            intent_prompt = f"رسالة المستخدم: {final}"
+            reply = reply or "✅ تم."
 
-            intent_raw = await deepseek_one_shot(intent_sys, intent_prompt)
-            intent     = intent_raw.strip().upper()
-
-            print(f"[Intent] '{final}' → {intent}")
-
-            # ══════════════════════════════════════
-            #  CHAT MODE
-            # ══════════════════════════════════════
-            if "ACTION" not in intent:
-                chat_sys = f"""تحدث مع المستخدم وساعده.
-{AiAbout}
-
-معلومات السيرفر الحالي:
-{server_info}"""
-
-                reply, new_sid, new_pmid = await deepseek_completion(
-                    chat_sys, final,
-                    session_id=us["session_id"],
-                    parent_message_id=us["parent_message_id"]
-                )
-
-                async with session_lock:
-                    us["session_id"]        = new_sid
-                    us["parent_message_id"] = new_pmid
-
-                await m.reply(reply or "مو واضح قصدك، وضح أكثر 😅")
-                return
-
-            # ══════════════════════════════════════
-            #  ACTION MODE
-            # ══════════════════════════════════════
-
-            # رسالة تأكيد سريعة
-            ack_sys = f"""قول للمستخدم إنك راح تحاول تنفذ طلبه.
-- جملة واحدة قصيرة باللهجة العراقية
-- لا تقول "خلاص" أو "خلصت" لأنك لسه ما نفذت
-- مثال: "حاضر، جربلك هسه!" أو "على عيني، أشوف شأسوي"
-{AiAbout}"""
-            ack_res = await deepseek_one_shot(ack_sys, f"المستخدم يريد: {final}")
-            await m.reply(clean_response(ack_res))
-
-            # ══════════════════════════════════════
-            #  خطوة 2: تحليل الأمر إلى JSON
-            # ══════════════════════════════════════
-            parser_prompt = f"""معلومات السيرفر:
-{server_info}
-
-{AiAbout}
-
-طلب المستخدم: {final}"""
-
-            parser_raw = await deepseek_one_shot(PARSER_SYSTEM, parser_prompt)
-            print(f"[Parser Raw]\n{parser_raw}")
-
-            # تنظيف الـ JSON
-            cleaned = clean_response(parser_raw)
-            # محاولة استخراج JSON من النص لو فيه نص زيادة
-            json_match = re.search(r'\{[\s\S]*\}', cleaned)
-            if json_match:
-                cleaned = json_match.group()
-
-            print(f"[Parser Cleaned]\n{cleaned}")
-
-            try:
-                raw = json.loads(cleaned)
-            except json.JSONDecodeError as je:
-                print(f"[JSON Error] {je}\nRaw: {cleaned}")
-                await m.reply(f"⚠️ ما قدرت أفهم الطلب، عيد الصياغة بشكل أوضح.")
-                return
-
-            # ══════════════════════════════════════
-            #  خطوة 3: تنفيذ الأوامر
-            # ══════════════════════════════════════
-            commands = []
-            no_skill_replies = []
-
-            for key, value in raw.items():
-                if key.startswith("NoSkill"):
-                    no_skill_replies.append(value.get("Reply", "ما أقدر أسوي هذا الطلب."))
-                else:
-                    commands.append({key: value})
-
-            # ارسل رسائل NoSkill
-            for reply in no_skill_replies:
-                await m.reply(reply)
-
-            # نفذ الأوامر
-            if commands:
-                results = await run_commands(commands, m.guild)
-                if results:
-                    result_text = "\n".join(results)
-                    # تقسيم إذا طويل
-                    if len(result_text) > 1900:
-                        chunks = [result_text[i:i+1900] for i in range(0, len(result_text), 1900)]
-                        for chunk in chunks:
-                            await m.reply(chunk)
-                    else:
-                        await m.reply(result_text)
+            # إرسال مع تقسيم إذا طويل
+            for chunk in [reply[i:i+1990] for i in range(0, len(reply), 1990)]:
+                await m.reply(chunk)
 
         except Exception as e:
-            print(f"[on_message Error] {e}")
-            await m.reply(f"⚠️ صار خطأ غير متوقع: {str(e)[:200]}")
+            print(f"[on_message] {e}")
+            await m.reply(f"⚠️ خطأ غير متوقع: {str(e)[:300]}")
 
 
-# ═══════════════════════════════════════════
-#                    RUN
-# ═══════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────
+#  Entry Point
+# ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if not USER_TOKEN:
-        raise ValueError("USER_TOKEN غير موجود في environment variables")
-    if not DEEPSEEK_TOKEN:
-        raise ValueError("DEEPSEEK_TOKEN غير موجود في environment variables")
-
+    missing = [v for v in ("USER_TOKEN", "DEEPSEEK_TOKEN") if not os.getenv(v)]
+    if missing:
+        raise EnvironmentError(f"❌ متغيرات مفقودة: {', '.join(missing)}")
     client.run(USER_TOKEN)
