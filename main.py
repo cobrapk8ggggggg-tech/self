@@ -204,15 +204,11 @@ async def deepseek_one_shot(system_content: str, user_content: str) -> str:
 
 
 # ═══════════════════════════════════════════
-#                   Intents
+#              Discord Client
 # ═══════════════════════════════════════════
-intents = discord.Intents.default()
-intents.message_content = True   # لازم لقراءة نص الرسائل
-intents.guilds          = True
-# ملاحظة: لا نحتاج members intent في السيلف بوت
-# الحساب الشخصي يرى الأعضاء بشكل طبيعي بدون هذا الـ intent
-# بل قد يكون استخدام members intent مع حساب عادي مسبباً للشك
-client = discord.Client(intents=intents)
+# ملاحظة: استخدام client = discord.Client() فقط لأن الإصدار القديم لا يدعم Intents
+# الحساب الشخصي يقرأ الرسائل والأعضاء بشكل طبيعي بدون الحاجة لتفعيل intents خاصة
+client = discord.Client()
 
 # ═══════════════════════════════════════════
 #                 Account Info
