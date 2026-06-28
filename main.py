@@ -22,11 +22,7 @@ ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1518721970223583374"))
 disor = G(api_key=GROQ_API_KEY)
 
 # ================= INTENTS =================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-
-client = discord.Client(intents=intents)
+client = discord.Client()
 
 # ================= EVENTS =================
 @client.event
