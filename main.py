@@ -20,7 +20,7 @@ USER_TOKEN = os.getenv("USER_TOKEN")
 DEEPSEEK_TOKEN = os.getenv("DEEPSEEK_TOKEN")
 ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
-# ================= سياقات المستخدمين (لكل مستخدم جلسة خاصة) =================
+# ================= سياقات المستخدمين =================
 user_sessions = {}   # user_id -> {"session_id": str, "parent_message_id": str}
 session_lock = asyncio.Lock()
 
@@ -140,7 +140,6 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
 
     full_text = ""
     new_parent_message_id = None
-    first_chunk_processed = False
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
@@ -158,10 +157,9 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
                         data_str = line[6:]
                         try:
                             data = json.loads(data_str)
-                            if not first_chunk_processed:
-                                if 'request_message_id' in data and 'response_message_id' in data:
-                                    new_parent_message_id = data['response_message_id']
-                                    first_chunk_processed = True
+                            # استخراج response_message_id من أول قطعة تحتوي عليه
+                            if new_parent_message_id is None and 'response_message_id' in data:
+                                new_parent_message_id = data['response_message_id']
                             v = data.get('v')
                             if v:
                                 if isinstance(v, str):
@@ -173,10 +171,11 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
                                             full_text += frag.get('content', '')
                         except:
                             pass
+            # معالجة البقية في buffer
             if buffer.startswith("data: "):
                 try:
                     data = json.loads(buffer[6:])
-                    if not first_chunk_processed and 'request_message_id' in data and 'response_message_id' in data:
+                    if new_parent_message_id is None and 'response_message_id' in data:
                         new_parent_message_id = data['response_message_id']
                     v = data.get('v')
                     if isinstance(v, str):
@@ -193,7 +192,6 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
 client = discord.Client()
 
 def get_bot_info():
-    """الحصول على معلومات البوت تلقائياً من التوكن"""
     name = client.user.name if client.user else "Disor 1"
     uid = client.user.id if client.user else 0
     return name, uid
@@ -292,7 +290,6 @@ ban_members, manage_messages, manage_guild, moderate_members, etc.)
 When in doubt, prefer specific permissions over "administrator": true.
 """
 
-# ستُملأ عند التشغيل
 AiAbout = ""
 
 # ================= EVENTS =================
@@ -383,13 +380,14 @@ async def run_commands(commands: list, guild: discord.Guild):
             try:
                 if key.startswith("CreateChannel"):
                     print(f"Running: CreateChannel")
-                    if command[key]["Type"] == "text":
+                    # استخدام lower() لتجنب مشكلة الأحرف الكبيرة
+                    if command[key]["Type"].lower() == "text":
                         channel = await guild.create_text_channel(name=command[key]["Name"])
                         if command[key].get("Category"):
                             cat = await disor_get_category(guild, command[key]["Category"])
                             if cat:
                                 await channel.edit(category=cat)
-                    elif command[key]["Type"] == "voice":
+                    elif command[key]["Type"].lower() == "voice":
                         channel = await guild.create_voice_channel(name=command[key]["Name"])
                         if command[key].get("Category"):
                             cat = await disor_get_category(guild, command[key]["Category"])
@@ -428,8 +426,9 @@ async def run_commands(commands: list, guild: discord.Guild):
                 elif key.startswith("CreateCategory"):
                     print(f"Running: CreateCategory")
                     await guild.create_category(name=command[key]["Name"])
+
             except Exception as e:
-                print(f"Command error: {e}")
+                print(f"Command execution error: {e}")
 
 # ================= MESSAGE HANDLER =================
 @client.event
