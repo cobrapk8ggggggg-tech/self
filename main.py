@@ -4,6 +4,7 @@ import json
 import os
 import random
 import time
+import re
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 import aiohttp
@@ -21,6 +22,7 @@ ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
 # ================= سياقات المستخدمين (لكل مستخدم جلسة خاصة) =================
 user_sessions = {}   # user_id -> {"session_id": str, "parent_message_id": str}
+session_lock = asyncio.Lock()
 
 # ================= DeepSeek API helpers =================
 RAILWAY_SERVER_URL = "https://web-production-c09dc.up.railway.app"
@@ -58,6 +60,12 @@ def build_headers(pow_response, token):
         'X-DS-PoW-Response': pow_response,
         'accept-charset': 'UTF-8',
     }
+
+def clean_response(text: str) -> str:
+    """إزالة كلمات FINISHEDSEARCH و FINISHED من الرد"""
+    text = re.sub(r'\bFINISHEDSEARCH\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bFINISHED\b', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
 async def get_fresh_pow(token):
     try:
@@ -103,22 +111,13 @@ async def create_chat_session(token):
                 raise Exception('Invalid session response: ' + json.dumps(data))
 
 async def deepseek_simple_completion(system_content, user_content, session_id=None, parent_message_id=None, search_enabled=False, thinking_enabled=False):
-    """
-    يجمع system_content و user_content في prompt واحد ويرسل إلى DeepSeek.
-    - إذا لم تُعطَ session_id يتم إنشاء جلسة جديدة.
-    - parent_message_id يستخدم لاستمرار المحادثة (إذا كان None تعتبر رسالة مستقلة).
-    تعيد: (النص, session_id_المستخدم, parent_message_id_الجديد)
-    """
     prompt = f"{system_content}\n\nUser: {user_content}" if system_content else user_content
     token = DEEPSEEK_TOKEN
     if not token:
         raise Exception("DEEPSEEK_TOKEN not set")
 
-    # إنشاء جلسة إذا لم توجد
-    new_session_created = False
     if session_id is None:
         session_id = await create_chat_session(token)
-        new_session_created = True
 
     pow_data = await get_fresh_pow(token)
     headers = build_headers(pow_data['pow_response'], token)
@@ -159,7 +158,6 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
                         data_str = line[6:]
                         try:
                             data = json.loads(data_str)
-                            # أول قطعة تحمل معرفات الجلسة
                             if not first_chunk_processed:
                                 if 'request_message_id' in data and 'response_message_id' in data:
                                     new_parent_message_id = data['response_message_id']
@@ -175,7 +173,6 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
                                             full_text += frag.get('content', '')
                         except:
                             pass
-            # معالجة البقية في buffer
             if buffer.startswith("data: "):
                 try:
                     data = json.loads(buffer[6:])
@@ -190,39 +187,20 @@ async def deepseek_simple_completion(system_content, user_content, session_id=No
                                 full_text += frag.get('content', '')
                 except:
                     pass
-    return full_text.strip(), session_id, new_parent_message_id
+    return clean_response(full_text), session_id, new_parent_message_id
 
 # ================= INTENTS =================
 client = discord.Client()
 
-# ================= EVENTS =================
-@client.event
-async def on_ready():
-    print(f"Logged as: {client.user}")
-    try:
-        await mongo_client.admin.command("ping")
-        print("MongoDB connected.")
-    except Exception as e:
-        print(f"MongoDB connection error: {e}")
+def get_bot_info():
+    """الحصول على معلومات البوت تلقائياً من التوكن"""
+    name = client.user.name if client.user else "Disor 1"
+    uid = client.user.id if client.user else 0
+    return name, uid
 
-# ================= HELPERS =================
-def return_server_info(guild: discord.Guild):
-    if not guild:
-        return ""
-    info = ""
-    info += f"Server: {guild.name} - {guild.id}\nCategories:\n"
-    for category in guild.categories:
-        info += f"- {category.name} ({category.id})\n"
-    info += "Channels:\n"
-    for channel in guild.channels:
-        info += f"- {channel.name} ({channel.id})\n"
-    info += "Roles:\n"
-    for role in guild.roles:
-        info += f"- Pos: {role.position}, Name: {role.name} ({role.id})\n"
-    return info
-
-AiAbout = f"""
-You are a Discord bot named Disor 1.
+def build_ai_about(bot_name: str) -> str:
+    return f"""
+You are a Discord bot named {bot_name}.
 - Talk in Arabic only, NEVER use any other language
 - You help users manage their Discord server
 - talk friendly and talk with اللهجة العراقية العامية
@@ -314,16 +292,44 @@ ban_members, manage_messages, manage_guild, moderate_members, etc.)
 When in doubt, prefer specific permissions over "administrator": true.
 """
 
-# دوال مساعدة تستخدم DeepSeek لاستخراج المعرفات
-async def disor_get_category(guild: discord.Guild, target: str):
-    server_categories = {}
-    for category in guild.categories:
-        server_categories[category.name] = {"id": str(category.id)}
+# ستُملأ عند التشغيل
+AiAbout = ""
 
+# ================= EVENTS =================
+@client.event
+async def on_ready():
+    global AiAbout
+    name, uid = get_bot_info()
+    AiAbout = build_ai_about(name)
+    print(f"Logged as: {name} ({uid})")
+    try:
+        await mongo_client.admin.command("ping")
+        print("MongoDB connected.")
+    except Exception as e:
+        print(f"MongoDB connection error: {e}")
+
+# ================= HELPERS =================
+def return_server_info(guild: discord.Guild):
+    if not guild:
+        return ""
+    info = ""
+    info += f"Server: {guild.name} - {guild.id}\nCategories:\n"
+    for category in guild.categories:
+        info += f"- {category.name} ({category.id})\n"
+    info += "Channels:\n"
+    for channel in guild.channels:
+        info += f"- {channel.name} ({channel.id})\n"
+    info += "Roles:\n"
+    for role in guild.roles:
+        info += f"- Pos: {role.position}, Name: {role.name} ({role.id})\n"
+    return info
+
+async def disor_get_category(guild: discord.Guild, target: str):
+    server_categories = {category.name: str(category.id) for category in guild.categories}
     system_msg = "You going to take a name of category and search for one in the list and return its id ONLY"
     user_msg = f"{target}\ncategories: {server_categories}"
     full_prompt = f"{system_msg}\n{user_msg}"
-    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)  # طلب مستقل
+    text, _, _ = await deepseek_simple_completion(None, full_prompt, parent_message_id=None)
     try:
         cat_id = int(text.strip())
         return guild.get_channel(cat_id)
@@ -331,10 +337,7 @@ async def disor_get_category(guild: discord.Guild, target: str):
         return None
 
 async def disor_get_channel(guild: discord.Guild, target: str):
-    server_channels = {}
-    for channel in guild.channels:
-        server_channels[channel.name] = {"id": str(channel.id)}
-
+    server_channels = {channel.name: str(channel.id) for channel in guild.channels}
     system_msg = "You going to take a name of channel and search for one in the list and return its id ONLY"
     user_msg = f"{target}\nchannels: {server_channels}"
     full_prompt = f"{system_msg}\n{user_msg}"
@@ -346,13 +349,7 @@ async def disor_get_channel(guild: discord.Guild, target: str):
         return None
 
 async def disor_get_role(guild: discord.Guild, target: str):
-    server_roles = {}
-    for role in guild.roles:
-        server_roles[role.name] = {
-            "id": str(role.id),
-            "color": str(role.color)
-        }
-
+    server_roles = {role.name: {"id": str(role.id), "color": str(role.color)} for role in guild.roles}
     system_msg = "You going to take a name of role and search for one in the list and return its id ONLY"
     user_msg = f"{target}\nroles: {server_roles}"
     full_prompt = f"{system_msg}\n{user_msg}"
@@ -365,16 +362,10 @@ async def disor_get_role(guild: discord.Guild, target: str):
 
 async def disor_get_member(guild: discord.Guild, target: str):
     server_members = {}
-    for member in guild.members:
-        server_members[member.name] = {
-            "id": str(member.id),
-            "global_name": str(member.global_name)
-        }
-
     sorted_members = ""
-    for member in server_members:
-        sorted_members += f"{member}: {server_members[member]['global_name']} ({server_members[member]['id']})\n"
-
+    for member in guild.members:
+        server_members[member.name] = {"id": str(member.id), "global_name": str(member.global_name)}
+        sorted_members += f"{member.name}: {member.global_name} ({member.id})\n"
     system_msg = "You going to take a name of member and search for one in the list and return its id ONLY\n- Don't chat with me, return ID ONLY!\n- be direct and return ID\n- if you found two or more members with the same name choose one of them randomly"
     user_msg = f"{target}\nMembers:\n{sorted_members}"
     full_prompt = f"{system_msg}\n{user_msg}"
@@ -389,53 +380,56 @@ async def run_commands(commands: list, guild: discord.Guild):
     for command in commands:
         for key in command:
             await asyncio.sleep(1)
-            if key.startswith("CreateChannel"):
-                print(f"Running command: Creating channel")
-                if command[key]["Type"] == "text":
-                    channel = await guild.create_text_channel(name=command[key]["Name"])
-                    if command[key]["Category"] is not None:
-                        cat = await disor_get_category(guild, command[key]["Category"])
-                        if cat:
-                            await channel.edit(category=cat)
-                elif command[key]["Type"] == "voice":
-                    channel = await guild.create_voice_channel(name=command[key]["Name"])
-                    if command[key]["Category"] is not None:
-                        cat = await disor_get_category(guild, command[key]["Category"])
-                        if cat:
-                            await channel.edit(category=cat)
+            try:
+                if key.startswith("CreateChannel"):
+                    print(f"Running: CreateChannel")
+                    if command[key]["Type"] == "text":
+                        channel = await guild.create_text_channel(name=command[key]["Name"])
+                        if command[key].get("Category"):
+                            cat = await disor_get_category(guild, command[key]["Category"])
+                            if cat:
+                                await channel.edit(category=cat)
+                    elif command[key]["Type"] == "voice":
+                        channel = await guild.create_voice_channel(name=command[key]["Name"])
+                        if command[key].get("Category"):
+                            cat = await disor_get_category(guild, command[key]["Category"])
+                            if cat:
+                                await channel.edit(category=cat)
 
-            elif key.startswith("DeleteChannel"):
-                print(f"Running command: Deleting channel")
-                channel = await disor_get_channel(guild, command[key]["Name"])
-                if channel:
-                    await channel.delete()
+                elif key.startswith("DeleteChannel"):
+                    print(f"Running: DeleteChannel")
+                    channel = await disor_get_channel(guild, command[key]["Name"])
+                    if channel:
+                        await channel.delete()
 
-            elif key.startswith("EditChannelName"):
-                print(f"Running command: Changing channel name")
-                channel = await disor_get_channel(guild, command[key]["Channel"])
-                if channel:
-                    await channel.edit(name=command[key]["Name"])
+                elif key.startswith("EditChannelName"):
+                    print(f"Running: EditChannelName")
+                    channel = await disor_get_channel(guild, command[key]["Channel"])
+                    if channel:
+                        await channel.edit(name=command[key]["Name"])
 
-            elif key.startswith("CreateRole"):
-                print(f"Running command: Creating role")
-                role = await guild.create_role(
-                    name=command[key]["Name"],
-                    colour=discord.Colour.from_str(command[key]["Color"])
-                )
-                perms = discord.Permissions(**command[key]["Perms"])
-                await role.edit(permissions=perms)
-                await guild.edit_role_positions(positions={role: command[key]["Position"] + 1})
+                elif key.startswith("CreateRole"):
+                    print(f"Running: CreateRole")
+                    role = await guild.create_role(
+                        name=command[key]["Name"],
+                        colour=discord.Colour.from_str(command[key]["Color"])
+                    )
+                    perms = discord.Permissions(**command[key]["Perms"])
+                    await role.edit(permissions=perms)
+                    await guild.edit_role_positions(positions={role: command[key]["Position"] + 1})
 
-            elif key.startswith("GrantRole"):
-                print(f"Running command: Giving role")
-                member = await disor_get_member(guild, command[key]["Member"])
-                role_to_grant = await disor_get_role(guild, command[key]["Name"])
-                if member and role_to_grant:
-                    await member.add_roles(role_to_grant)
+                elif key.startswith("GrantRole"):
+                    print(f"Running: GrantRole")
+                    member = await disor_get_member(guild, command[key]["Member"])
+                    role_to_grant = await disor_get_role(guild, command[key]["Name"])
+                    if member and role_to_grant:
+                        await member.add_roles(role_to_grant)
 
-            elif key.startswith("CreateCategory"):
-                print(f"Running command: Creating category")
-                await guild.create_category(name=command[key]["Name"])
+                elif key.startswith("CreateCategory"):
+                    print(f"Running: CreateCategory")
+                    await guild.create_category(name=command[key]["Name"])
+            except Exception as e:
+                print(f"Command error: {e}")
 
 # ================= MESSAGE HANDLER =================
 @client.event
@@ -446,34 +440,54 @@ async def on_message(m: discord.Message):
     if m.channel.id != ALLOWED_CHANNEL_ID:
         return
 
-    if client.user.mention not in m.content:
+    # التحقق من التفاعل: منشن أو رد على رسالة البوت
+    is_mention = client.user.mention in m.content
+    is_reply_to_bot = (
+        m.reference and
+        m.reference.resolved and
+        isinstance(m.reference.resolved, discord.Message) and
+        m.reference.resolved.author.id == client.user.id
+    )
+
+    if not (is_mention or is_reply_to_bot):
         return
 
     user_id = m.author.id
-    final = m.content.replace(client.user.mention, "").strip()
+
+    # استخراج النص
+    if is_mention:
+        final = m.content.replace(client.user.mention, "").strip()
+    else:
+        final = m.content.strip()
+
+    if not final:
+        return
 
     # أمر إعادة تعيين المحادثة
     if final.startswith("!newchat") or final.strip() == "محادثة جديدة":
-        if user_id in user_sessions:
-            del user_sessions[user_id]
+        async with session_lock:
+            if user_id in user_sessions:
+                del user_sessions[user_id]
         await m.reply("تم بدء محادثة جديدة، السياق السابق ألغي.")
         return
 
-    # ضمان وجود جلسة للمستخدم (سيتم ملؤها عند الحاجة)
-    if user_id not in user_sessions:
-        user_sessions[user_id] = {"session_id": None, "parent_message_id": None}
-    us = user_sessions[user_id]
+    async with session_lock:
+        if user_id not in user_sessions:
+            user_sessions[user_id] = {"session_id": None, "parent_message_id": None}
+        us = user_sessions[user_id]
 
     async with m.channel.typing():
-        # ==== تصنيف النية (بدون التأثير على السياق) ====
+        # ==== تصنيف النية ====
         intent_system = f"""Look at the user message and see if he wants to talk or want action, also if the user is asking questions return 'USER_IS_MESSAGING'
 About you: {AiAbout}
 DON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' or 'USER_WANTS_ACTION' ONLY"""
         intent_prompt = f"User message: {final}"
-        intent_res, _, _ = await deepseek_simple_completion(intent_system, intent_prompt,
-                                                           session_id=us["session_id"],
-                                                           parent_message_id=None)  # مستقل
-        intent = intent_res.strip()
+        intent_res, _, _ = await deepseek_simple_completion(
+            intent_system, intent_prompt,
+            session_id=us["session_id"],
+            parent_message_id=None
+        )
+        intent = clean_response(intent_res).strip()
 
         if intent.startswith("USER_IS_MESSAGING"):
             # ==== دردشة عادية ====
@@ -483,9 +497,9 @@ DON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' o
                 session_id=us["session_id"],
                 parent_message_id=us["parent_message_id"]
             )
-            # تحديث الجلسة
-            us["session_id"] = new_sid
-            us["parent_message_id"] = new_parent
+            async with session_lock:
+                us["session_id"] = new_sid
+                us["parent_message_id"] = new_parent
             await m.reply(chat_res)
 
         elif intent.startswith("USER_WANTS_ACTION"):
@@ -496,10 +510,12 @@ DON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' o
 - Keep it short, one sentence only
 About you: {AiAbout}"""
             ack_prompt = f"User wants: {final}"
-            ack_res, _, _ = await deepseek_simple_completion(ack_system, ack_prompt,
-                                                            session_id=us["session_id"],
-                                                            parent_message_id=None)  # مستقل
-            await m.reply(ack_res)
+            ack_res, _, _ = await deepseek_simple_completion(
+                ack_system, ack_prompt,
+                session_id=us["session_id"],
+                parent_message_id=None
+            )
+            await m.reply(clean_response(ack_res))
 
             # ==== تحليل الأمر إلى JSON ====
             parser_system = f"""Take the user input and reply with JSON only NEVER CHANGE THE JSON FORMAT.
@@ -514,7 +530,7 @@ If information is not provided or not found in Server Information, use these def
 - "Name": generate a reasonable name based on context, NEVER leave empty
 - "Color": "#99AAB5" (Discord's default role color)
 - "Position": 0 (bottom, just above @everyone)
-- "Perms": none (no special permissions) (THIS IS THE IMPORTANT KEY, DON'T REMOVE IT!!!)
+- "Perms": {{}} (no special permissions) (THIS IS THE IMPORTANT KEY, DON'T REMOVE IT!!!)
 
 Server Information:
 {return_server_info(m.guild)}
@@ -524,22 +540,25 @@ if the user asked you to put a role lower than role, just type in 'Position' key
 
 About you: {AiAbout}"""
             parser_prompt = f"User request: {final}"
-            parser_res, _, _ = await deepseek_simple_completion(parser_system, parser_prompt,
-                                                               session_id=us["session_id"],
-                                                               parent_message_id=None)  # مستقل
-            print("Parser output:", parser_res)
+            parser_res, _, _ = await deepseek_simple_completion(
+                parser_system, parser_prompt,
+                session_id=us["session_id"],
+                parent_message_id=None
+            )
+            cleaned = clean_response(parser_res)
+            print("Parser output:", cleaned)
             try:
-                raw = json.loads(parser_res)
+                raw = json.loads(cleaned)
                 commands = []
                 for key, value in raw.items():
                     if key.startswith("NoSkill"):
-                        await m.reply(raw[key]["Reply"])
+                        await m.reply(value["Reply"])
                     else:
                         commands.append({key: value})
                 if commands:
                     await run_commands(commands, m.guild)
-            except Exception as e:
-                await m.reply(f"حدث خطأ في معالجة الأمر: {e}")
+            except json.JSONDecodeError as e:
+                await m.reply(f"⚠️ حدث خطأ في تحليل الأمر. تأكد من صيغة الطلب.\nالتفاصيل: {e}")
 
 # ================= RUN =================
 client.run(USER_TOKEN)
