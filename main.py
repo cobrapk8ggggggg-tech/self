@@ -2,11 +2,11 @@ import discord
 import asyncio
 import json
 import os
-from groq import Groq as G
+import random
+import time
+from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
-
-MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-GUILD = None
+import aiohttp
 
 # ================= MongoDB =================
 MONGODB_URI = os.getenv("MONGODB_URI")
@@ -16,10 +16,158 @@ history_col = db["history"]
 
 # ================= KEYS =================
 USER_TOKEN = os.getenv("USER_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DEEPSEEK_TOKEN = os.getenv("DEEPSEEK_TOKEN")
 ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
-disor = G(api_key=GROQ_API_KEY)
+# ================= DeepSeek API helpers =================
+RAILWAY_SERVER_URL = "https://web-production-c09dc.up.railway.app"
+POW_API_URL = f"{RAILWAY_SERVER_URL}/pow"
+
+def generate_device_id():
+    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    return ''.join(random.choice(chars) for _ in range(88))
+
+def generate_rangers_id():
+    ts = int(time.time() * 1000)
+    rv = random.randint(1000000000, 9999999999)
+    return str((ts << 32) | rv)
+
+def get_tz_offset():
+    offset = -datetime.now().astimezone().utcoffset().total_seconds()
+    return str(int(offset))
+
+def build_headers(pow_response, token):
+    return {
+        'User-Agent': 'DeepSeek/2.1.1 Android/36',
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'Content-Type': 'application/json',
+        'x-client-platform': 'android',
+        'x-client-version': '2.1.1',
+        'x-client-locale': 'ar',
+        'x-client-bundle-id': 'com.deepseek.chat',
+        'x-rangers-id': generate_rangers_id(),
+        'x-client-timezone-offset': get_tz_offset(),
+        'x-device-id': generate_device_id(),
+        'x-os-version': '30',
+        'x-app-version': '2.1.1',
+        'Authorization': f'Bearer {token}',
+        'X-DS-PoW-Response': pow_response,
+        'accept-charset': 'UTF-8',
+    }
+
+async def get_fresh_pow(token):
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{POW_API_URL}?authorization={token}"
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    async with session.get(POW_API_URL) as fallback_resp:
+                        if fallback_resp.status != 200:
+                            raise Exception(f"POW failed: {fallback_resp.status}")
+                        data = await fallback_resp.json()
+                else:
+                    data = await resp.json()
+            if not data.get('pow_response') and not data.get('x_ds_pow_response'):
+                raise Exception("Incomplete POW response")
+            return {
+                'pow_response': data.get('x_ds_pow_response') or data['pow_response'],
+                'pow_data': data.get('solved_json')
+            }
+    except Exception as e:
+        print(f"Error getting POW: {e}")
+        raise
+
+async def create_chat_session(token):
+    url = "https://chat.deepseek.com/api/v0/chat_session/create"
+    headers = {
+        'x-client-bundle-id': 'com.deepseek.chat',
+        'x-client-platform': 'web',
+        'x-client-version': '2.0.0',
+        'x-client-locale': 'en_US',
+        'x-client-timezone-offset': get_tz_offset(),
+        'x-app-version': '2.0.0',
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+        'Accept': '*/*'
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json={}) as resp:
+            data = await resp.json()
+            if data.get('data', {}).get('biz_data', {}).get('chat_session', {}).get('id'):
+                return data['data']['biz_data']['chat_session']['id']
+            else:
+                raise Exception('Invalid session response: ' + json.dumps(data))
+
+async def deepseek_simple_completion(system_content, user_content, search_enabled=False, thinking_enabled=False):
+    """
+    يجمع system_content و user_content في prompt واحد ويرسل إلى DeepSeek،
+    ويعيد النص المستخرج من التدفق.
+    """
+    prompt = f"{system_content}\n\nUser: {user_content}" if system_content else user_content
+    token = DEEPSEEK_TOKEN
+    if not token:
+        raise Exception("DEEPSEEK_TOKEN not set")
+
+    session_id = await create_chat_session(token)
+    pow_data = await get_fresh_pow(token)
+    headers = build_headers(pow_data['pow_response'], token)
+
+    payload = {
+        "chat_session_id": session_id,
+        "parent_message_id": None,
+        "prompt": prompt,
+        "ref_file_ids": [],
+        "thinking_enabled": thinking_enabled,
+        "search_enabled": search_enabled,
+        "model_type": "default",
+        "action": None,
+        "preempt": False,
+        "pow": pow_data['pow_data'],
+        "stream": True
+    }
+
+    url = "https://chat.deepseek.com/api/v0/chat/completion"
+
+    full_text = ""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as resp:
+            buffer = ""
+            async for chunk in resp.content.iter_chunked(1024):
+                text = chunk.decode('utf-8')
+                buffer += text
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    line = line.strip()
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        try:
+                            data = json.loads(data_str)
+                            v = data.get('v')
+                            if v:
+                                if isinstance(v, str):
+                                    full_text += v
+                                elif isinstance(v, dict) and 'response' in v:
+                                    fragments = v['response'].get('fragments', [])
+                                    for frag in fragments:
+                                        if frag['type'] == 'RESPONSE':
+                                            full_text += frag.get('content', '')
+                        except:
+                            pass
+            # معالجة آخر سطر إن وجد
+            if buffer.startswith("data: "):
+                try:
+                    data = json.loads(buffer[6:])
+                    v = data.get('v')
+                    if isinstance(v, str):
+                        full_text += v
+                    elif isinstance(v, dict):
+                        for frag in v.get('response', {}).get('fragments', []):
+                            if frag['type'] == 'RESPONSE':
+                                full_text += frag.get('content', '')
+                except:
+                    pass
+    return full_text.strip()
 
 # ================= INTENTS =================
 client = discord.Client()
@@ -28,7 +176,6 @@ client = discord.Client()
 @client.event
 async def on_ready():
     print(f"Logged as: {client.user}")
-    # تأكيد اتصال MongoDB
     try:
         await mongo_client.admin.command("ping")
         print("MongoDB connected.")
@@ -39,21 +186,16 @@ async def on_ready():
 def return_server_info(guild: discord.Guild):
     if not guild:
         return ""
-    
     info = ""
     info += f"Server: {guild.name} - {guild.id}\nCategories:\n"
-
     for category in guild.categories:
         info += f"- {category.name} ({category.id})\n"
-
     info += "Channels:\n"
     for channel in guild.channels:
         info += f"- {channel.name} ({channel.id})\n"
-
     info += "Roles:\n"
     for role in guild.roles:
         info += f"- Pos: {role.position}, Name: {role.name} ({role.id})\n"
-
     return info
 
 AiAbout = f"""
@@ -149,7 +291,7 @@ ban_members, manage_messages, manage_guild, moderate_members, etc.)
 When in doubt, prefer specific permissions over "administrator": true.
 """
 
-def disor_get_category(guild: discord.Guild, target: str):
+async def disor_get_category(guild: discord.Guild, target: str):
     server_categories = {}
     for category in guild.categories:
         server_categories[category.name] = {"id": str(category.id)}
@@ -160,23 +302,32 @@ def disor_get_category(guild: discord.Guild, target: str):
         "Moderators": {"id": "432534654"},
     }
 
-    disor_category = disor.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You going to take a name of category and search for one in the list and return its id ONLY"},
-            # امثلة بالعراقية
-            {"role": "user", "content": f"سويلي روم اسمه chat و حطه بكاتجوري General\ncategories: {default_categories}"},
-            {"role": "assistant", "content": "1321462575"},
-            {"role": "user", "content": f"هذا الكاتجوري ايديه: 1321462575\ncategories: {default_categories}"},
-            {"role": "assistant", "content": "1321462575"},
-            {"role": "user", "content": f"دز الروم للكاتجوري مال المشرفين\ncategories: {default_categories}"},
-            {"role": "assistant", "content": "432534654"},
-            {"role": "user", "content": f"{target}\ncategories: {server_categories}"}
-        ]
-    )
-    return guild.get_channel(int(disor_category.choices[0].message.content))
+    system_msg = "You going to take a name of category and search for one in the list and return its id ONLY"
+    user_msg = f"{target}\ncategories: {server_categories}"
+    # إضافة أمثلة لتحسين الدقة
+    example = f"""Example:
+User: سويلي روم اسمه chat و حطه بكاتجوري General
+categories: {default_categories}
+Assistant: 1321462575
 
-def disor_get_channel(guild: discord.Guild, target: str):
+User: هذا الكاتجوري ايديه: 1321462575
+categories: {default_categories}
+Assistant: 1321462575
+
+User: دز الروم للكاتجوري مال المشرفين
+categories: {default_categories}
+Assistant: 432534654
+
+Now the real request: {user_msg}"""
+    full_prompt = f"{system_msg}\n{example}"
+    response = await deepseek_simple_completion(None, full_prompt)  # نمرر كمحتوى واحد
+    try:
+        cat_id = int(response.strip())
+        return guild.get_channel(cat_id)
+    except:
+        return None
+
+async def disor_get_channel(guild: discord.Guild, target: str):
     server_channels = {}
     for channel in guild.channels:
         server_channels[channel.name] = {"id": str(channel.id)}
@@ -187,22 +338,30 @@ def disor_get_channel(guild: discord.Guild, target: str):
         "welcomes": {"id": "432534654"},
     }
 
-    disor_channel = disor.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You going to take a name of category and search for one in the list and return its id ONLY"},
-            {"role": "user", "content": f"شات العام\nchannels: {default_channels}"},
-            {"role": "assistant", "content": "1234567899"},
-            {"role": "user", "content": f"الروم الصوتي مال رقم 1\nchannels: {default_channels}"},
-            {"role": "assistant", "content": "1321462575"},
-            {"role": "user", "content": f"welcomes | ترحيب\nchannels: {default_channels}"},
-            {"role": "assistant", "content": "432534654"},
-            {"role": "user", "content": f"{target}\nchannels: {server_channels}"}
-        ]
-    )
-    return guild.get_channel(int(disor_channel.choices[0].message.content))
+    system_msg = "You going to take a name of category and search for one in the list and return its id ONLY"
+    example = f"""Example:
+User: شات العام
+channels: {default_channels}
+Assistant: 1234567899
 
-def disor_get_role(guild: discord.Guild, target: str):
+User: الروم الصوتي مال رقم 1
+channels: {default_channels}
+Assistant: 1321462575
+
+User: welcomes | ترحيب
+channels: {default_channels}
+Assistant: 432534654
+
+Now the real request: {target}\nchannels: {server_channels}"""
+    full_prompt = f"{system_msg}\n{example}"
+    response = await deepseek_simple_completion(None, full_prompt)
+    try:
+        ch_id = int(response.strip())
+        return guild.get_channel(ch_id)
+    except:
+        return None
+
+async def disor_get_role(guild: discord.Guild, target: str):
     server_roles = {}
     for role in guild.roles:
         server_roles[role.name] = {
@@ -216,22 +375,30 @@ def disor_get_role(guild: discord.Guild, target: str):
         "member": {"id": "432534654", "color": "#0000ff"},
     }
 
-    disor_role = disor.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You going to take a name of role and search for one in the list and return its id ONLY"},
-            {"role": "user", "content": f"الرول الأحمر\nroles: {default_roles}"},
-            {"role": "assistant", "content": "1234567899"},
-            {"role": "user", "content": f"الادمن | admin\nroles: {default_roles}"},
-            {"role": "assistant", "content": "1321462575"},
-            {"role": "user", "content": f"العضو او ممبر\nroles: {default_roles}"},
-            {"role": "assistant", "content": "432534654"},
-            {"role": "user", "content": f"{target}\nroles: {server_roles}"}
-        ]
-    )
-    return guild.get_role(int(disor_role.choices[0].message.content))
+    system_msg = "You going to take a name of role and search for one in the list and return its id ONLY"
+    example = f"""Example:
+User: الرول الأحمر
+roles: {default_roles}
+Assistant: 1234567899
 
-def disor_get_member(guild: discord.Guild, target: str):
+User: الادمن | admin
+roles: {default_roles}
+Assistant: 1321462575
+
+User: العضو او ممبر
+roles: {default_roles}
+Assistant: 432534654
+
+Now the real request: {target}\nroles: {server_roles}"""
+    full_prompt = f"{system_msg}\n{example}"
+    response = await deepseek_simple_completion(None, full_prompt)
+    try:
+        role_id = int(response.strip())
+        return guild.get_role(role_id)
+    except:
+        return None
+
+async def disor_get_member(guild: discord.Guild, target: str):
     server_members = {}
     for member in guild.members:
         server_members[member.name] = {
@@ -249,20 +416,28 @@ def disor_get_member(guild: discord.Guild, target: str):
     for member in server_members:
         sorted_members += f"{member}: {server_members[member]['global_name']} ({server_members[member]['id']})\n"
 
-    disor_member = disor.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You going to take a name of member and search for one in the list and return its id ONLY\n- Don't chat with me, return ID ONLY!\n- be direct and return ID\n- if you found two or more members with the same name choose one of them randomly"},
-            {"role": "user", "content": f"حمادة\nMembers: {default_members}"},
-            {"role": "assistant", "content": "1234567899"},
-            {"role": "user", "content": f"mostafa iz\nMembers: {default_members}"},
-            {"role": "assistant", "content": "1321462575"},
-            {"role": "user", "content": f"Zigzag\nMembers: {default_members}"},
-            {"role": "assistant", "content": "432534654"},
-            {"role": "user", "content": f"{target}\nMembers:\n{sorted_members}"}
-        ]
-    )
-    return guild.get_member(int(disor_member.choices[0].message.content))
+    system_msg = "You going to take a name of member and search for one in the list and return its id ONLY\n- Don't chat with me, return ID ONLY!\n- be direct and return ID\n- if you found two or more members with the same name choose one of them randomly"
+    example = f"""Example:
+User: حمادة
+Members: {default_members}
+Assistant: 1234567899
+
+User: mostafa iz
+Members: {default_members}
+Assistant: 1321462575
+
+User: Zigzag
+Members: {default_members}
+Assistant: 432534654
+
+Now the real request: {target}\nMembers:\n{sorted_members}"""
+    full_prompt = f"{system_msg}\n{example}"
+    response = await deepseek_simple_completion(None, full_prompt)
+    try:
+        member_id = int(response.strip())
+        return guild.get_member(member_id)
+    except:
+        return None
 
 async def run_commands(commands: list, guild: discord.Guild):
     for command in commands:
@@ -273,21 +448,23 @@ async def run_commands(commands: list, guild: discord.Guild):
                 if command[key]["Type"] == "text":
                     channel = await guild.create_text_channel(name=command[key]["Name"])
                     if command[key]["Category"] is not None:
-                        await channel.edit(category=disor_get_category(guild, command[key]["Category"]))
+                        await channel.edit(category=await disor_get_category(guild, command[key]["Category"]))
                 elif command[key]["Type"] == "voice":
                     channel = await guild.create_voice_channel(name=command[key]["Name"])
                     if command[key]["Category"] is not None:
-                        await channel.edit(category=disor_get_category(guild, command[key]["Category"]))
+                        await channel.edit(category=await disor_get_category(guild, command[key]["Category"]))
 
             elif key.startswith("DeleteChannel"):
                 print(f"Running command: Deleting channel")
-                channel = disor_get_channel(guild, command[key]["Name"])
-                await channel.delete()
+                channel = await disor_get_channel(guild, command[key]["Name"])
+                if channel:
+                    await channel.delete()
 
             elif key.startswith("EditChannelName"):
                 print(f"Running command: Changing channel name")
-                channel = disor_get_channel(guild, command[key]["Channel"])
-                await channel.edit(name=command[key]["Name"])
+                channel = await disor_get_channel(guild, command[key]["Channel"])
+                if channel:
+                    await channel.edit(name=command[key]["Name"])
 
             elif key.startswith("CreateRole"):
                 print(f"Running command: Creating role")
@@ -301,9 +478,10 @@ async def run_commands(commands: list, guild: discord.Guild):
 
             elif key.startswith("GrantRole"):
                 print(f"Running command: Giving role")
-                member = disor_get_member(guild, command[key]["Member"])
-                role_to_grant = disor_get_role(guild, command[key]["Name"])
-                await member.add_roles(role_to_grant)
+                member = await disor_get_member(guild, command[key]["Member"])
+                role_to_grant = await disor_get_role(guild, command[key]["Name"])
+                if member and role_to_grant:
+                    await member.add_roles(role_to_grant)
 
             elif key.startswith("CreateCategory"):
                 print(f"Running command: Creating category")
@@ -317,128 +495,130 @@ async def on_message(m: discord.Message):
 
     if m.channel.id == ALLOWED_CHANNEL_ID:
         if client.user.mention in m.content:
-            final = m.content.replace(client.user.mention, "")
+            final = m.content.replace(client.user.mention, "").strip()
 
             async with m.channel.typing():
-                response = disor.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {"role": "system", "content": f"Look at the user message and see if he wants to talk or want action, also if the user is asking questions return 'USER_IS_MESSAGING'\nAbout you: {AiAbout}\nDON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' or 'USER_WANTS_ACTION' ONLY"},
-                        # امثلة بالعراقية
-                        {"role": "user", "content": "شلونك يمعود"},
-                        {"role": "assistant", "content": "USER_IS_MESSAGING"},
-                        {"role": "user", "content": "ممكن تطرد هذا الشخص من السيرفر"},
-                        {"role": "assistant", "content": "USER_WANTS_ACTION"},
-                        {"role": "user", "content": "الو"},
-                        {"role": "assistant", "content": "USER_IS_MESSAGING"},
-                        {"role": "user", "content": "سويلي روم اسمه chat"},
-                        {"role": "assistant", "content": "USER_WANTS_ACTION"},
-                        {"role": "user", "content": "هلا"},
-                        {"role": "assistant", "content": "USER_IS_MESSAGING"},
-                        {"role": "user", "content": final},
-                    ]
-                )
+                # تصنيف النية
+                intent_system = f"""Look at the user message and see if he wants to talk or want action, also if the user is asking questions return 'USER_IS_MESSAGING'
+About you: {AiAbout}
+DON'T chat with the user just take his message and return: 'USER_IS_MESSAGING' or 'USER_WANTS_ACTION' ONLY"""
 
-                print(response.choices[0].message.content)
-                if response.choices[0].message.content.startswith("USER_IS_MESSAGING"):
-                    chatbot = disor.chat.completions.create(
-                        model=MODEL,
-                        messages=[
-                            {"role": "system", "content": f"تحدث إلى المستخدم وساعده أو قدم له أي مساعدة يطلبها...\nAbout you: {AiAbout}\nServer Information:\n{return_server_info(m.guild)}"},
-                            {"role": "user", "content": final}
-                        ]
-                    )
-                    await m.reply(chatbot.choices[0].message.content)
+                intent_prompt = f"""Examples:
+User: شلونك يمعود
+Assistant: USER_IS_MESSAGING
 
-                elif response.choices[0].message.content.startswith("USER_WANTS_ACTION"):
-                    actioner = disor.chat.completions.create(
-                        model=MODEL,
-                        messages=[
-                            {"role": "system", "content": f"""You tell the user you will TRY to do the action, but you're not sure if it will succeed.
-                            - Say things like 'let me try' or 'give me a sec' or 'on it'
-                            - NEVER say 'done' or 'completed' because you don't know yet
-                            - Keep it short, one sentence only
-                            About you: {AiAbout}"""},
-                            # امثلة بالعراقية
-                            {"role": "user", "content": "سويلي روم اسمه chat"},
-                            {"role": "assistant", "content": "خليني اشوف، ثواني"},
-                            {"role": "user", "content": "طرد هذا الشخص"},
-                            {"role": "assistant", "content": "دعني احاول"},
-                            {"role": "user", "content": "شيل هذا الروم"},
-                            {"role": "assistant", "content": "تمام، لحظة"},
-                            {"role": "user", "content": final}
-                        ]
-                    )
+User: ممكن تطرد هذا الشخص من السيرفر
+Assistant: USER_WANTS_ACTION
 
-                    # حفظ بالـ MongoDB بدل القائمة
-                    await history_col.insert_one({"role": "user", "content": ""})
+User: الو
+Assistant: USER_IS_MESSAGING
 
-                    await m.reply(actioner.choices[0].message.content)
+User: سويلي روم اسمه chat
+Assistant: USER_WANTS_ACTION
 
-                    commands = []
+User: هلا
+Assistant: USER_IS_MESSAGING
 
-                    parser = disor.chat.completions.create(
-                        model=MODEL,
-                        messages=[
-                            {"role": "system", "content": f"""Take the user input and reply with JSON only NEVER CHANGE THE JSON FORMAT.
+Now the real request: {final}"""
 
-                            If the user asks for something NOT in your available skills/actions (check "About you" below), respond with:
-                            {{"NoSkill0": {{"Reply": "رد طبيعي هنا يوضح إنك معرفش تعمل الطلب ده"}}}}
+                intent_res = await deepseek_simple_completion(intent_system, intent_prompt)
+                intent = intent_res.strip()
 
-                            Format: {{"CreateChannel0": {{"Name": "...", "Type": "..."}}}}
-                             
-                            ⚠️ NEVER leave a field empty ("") or omit a key if information is missing.
-                            If information is not provided or not found in Server Information, use these defaults:
-                            - "Name": generate a reasonable name based on context, NEVER leave empty
-                            - "Color": "#99AAB5" (Discord's default role color)
-                            - "Position": 0 (bottom, just above @everyone)
-                            - "Perms": none (no special permissions) (THIS IS THE IMPORTANT KEY, DON'T REMOVE IT!!!)
-                            
-                            Server Information:
-                            {return_server_info(m.guild)}
+                if intent.startswith("USER_IS_MESSAGING"):
+                    chat_system = f"تحدث إلى المستخدم وساعده أو قدم له أي مساعدة يطلبها...\nAbout you: {AiAbout}\nServer Information:\n{return_server_info(m.guild)}"
+                    chat_res = await deepseek_simple_completion(chat_system, final)
+                    await m.reply(chat_res)
 
-                            if the user asked you to put a role higher than role, just type in 'Position' key the target role Pos
-                            if the user asked you to put a role lower than role, just type in 'Position' key the target role Pos - 1
+                elif intent.startswith("USER_WANTS_ACTION"):
+                    ack_system = f"""You tell the user you will TRY to do the action, but you're not sure if it will succeed.
+- Say things like 'let me try' or 'give me a sec' or 'on it'
+- NEVER say 'done' or 'completed' because you don't know yet
+- Keep it short, one sentence only
+About you: {AiAbout}"""
+                    ack_prompt = f"""Examples:
+User: سويلي روم اسمه chat
+Assistant: خليني اشوف، ثواني
 
-                            About you: {AiAbout}"""},
-                            # امثلة بالعراقية
-                            {"role": "user", "content": "سويلي روم اسمه chat"},
-                            {"role": "assistant", "content": "{\"CreateChannel0\": {\"Name\": \"chat\", \"Type\": \"text\", \"Category\": null}}"},
-                            {"role": "user", "content": "سويلي روم اسمه chat و روم ثاني اسمه welcome"},
-                            {"role": "assistant", "content": "{\"CreateChannel0\": {\"Name\": \"chat\", \"Type\": \"text\", \"Category\": null}, \"CreateChannel1\": {\"Name\": \"welcome\", \"Type\": \"text\", \"Category\": null}}"},
-                            {"role": "user", "content": "سويلي روم صوتي اسمه voice 1"},
-                            {"role": "assistant", "content": "{\"CreateChannel0\": {\"Name\": \"voice 1\", \"Type\": \"voice\", \"Category\": null}}"},
-                            {"role": "user", "content": "سويلي روم اسمه chat و حطه بكاتجوري General"},
-                            {"role": "assistant", "content": "{\"CreateChannel0\": {\"Name\": \"chat\", \"Type\": \"text\", \"Category\": \"General\"}}"},
-                            {"role": "user", "content": "شيل الروم اللي اسمه chat"},
-                            {"role": "assistant", "content": "{\"DeleteChannel0\": {\"Name\": \"chat\"}}"},
-                            {"role": "user", "content": "غير اسم الروم chat لـ welcome"},
-                            {"role": "assistant", "content": "{\"EditChannelName0\": {\"Channel\": \"chat\", \"Name\": \"welcome\"}}"},
-                            {"role": "user", "content": "غير اسم الروم اللي اسمه chat لـ welcome"},
-                            {"role": "assistant", "content": "{\"EditChannelName0\": {\"Channel\": \"chat\", \"Name\": \"welcome\"}}"},
-                            {"role": "user", "content": "سويلي رتبة اسمها VIP لونها اخضر و اعطيها صلاحية add_reactions"},
-                            {"role": "assistant", "content": "{\"CreateRole0\": {\"Name\": \"VIP\", \"Color\": \"#00FF00\", \"Position\": 0, \"Perms\": {\"add_reactions\": true}}}"},
-                            {"role": "user", "content": "انطي العضو محمد رتبة الادمن اللي لونها ازرق"},
-                            {"role": "assistant", "content": "{\"GrantRole0\": {\"Name\": \"ادمن اللي لونها ازرق\", \"Member\": \"محمد\"}}"},
-                            {"role": "user", "content": "بلكي اعمل كاتجوري اسمها Generals"},
-                            {"role": "assistant", "content": "{\"CreateCategory0\": {\"Name\": \"Generals\"}}"},
-                            {"role": "user", "content": final}
-                        ]
-                    )
+User: طرد هذا الشخص
+Assistant: دعني احاول
 
-                    print(parser.choices[0].message.content)
+User: شيل هذا الروم
+Assistant: تمام، لحظة
+
+Now: {final}"""
+                    ack_res = await deepseek_simple_completion(ack_system, ack_prompt)
+                    await m.reply(ack_res)
+
+                    # استخراج JSON الأوامر
+                    parser_system = f"""Take the user input and reply with JSON only NEVER CHANGE THE JSON FORMAT.
+
+If the user asks for something NOT in your available skills/actions (check "About you" below), respond with:
+{{"NoSkill0": {{"Reply": "رد طبيعي هنا يوضح إنك معرفش تعمل الطلب ده"}}}}
+
+Format: {{"CreateChannel0": {{"Name": "...", "Type": "..."}}}}
+ 
+⚠️ NEVER leave a field empty ("") or omit a key if information is missing.
+If information is not provided or not found in Server Information, use these defaults:
+- "Name": generate a reasonable name based on context, NEVER leave empty
+- "Color": "#99AAB5" (Discord's default role color)
+- "Position": 0 (bottom, just above @everyone)
+- "Perms": none (no special permissions) (THIS IS THE IMPORTANT KEY, DON'T REMOVE IT!!!)
+
+Server Information:
+{return_server_info(m.guild)}
+
+if the user asked you to put a role higher than role, just type in 'Position' key the target role Pos
+if the user asked you to put a role lower than role, just type in 'Position' key the target role Pos - 1
+
+About you: {AiAbout}"""
+                    parser_prompt = f"""Examples:
+User: سويلي روم اسمه chat
+Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": null}}}}
+
+User: سويلي روم اسمه chat و روم ثاني اسمه welcome
+Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": null}}, "CreateChannel1": {{"Name": "welcome", "Type": "text", "Category": null}}}}
+
+User: سويلي روم صوتي اسمه voice 1
+Assistant: {{"CreateChannel0": {{"Name": "voice 1", "Type": "voice", "Category": null}}}}
+
+User: سويلي روم اسمه chat و حطه بكاتجوري General
+Assistant: {{"CreateChannel0": {{"Name": "chat", "Type": "text", "Category": "General"}}}}
+
+User: شيل الروم اللي اسمه chat
+Assistant: {{"DeleteChannel0": {{"Name": "chat"}}}}
+
+User: غير اسم الروم chat لـ welcome
+Assistant: {{"EditChannelName0": {{"Channel": "chat", "Name": "welcome"}}}}
+
+User: غير اسم الروم اللي اسمه chat لـ welcome
+Assistant: {{"EditChannelName0": {{"Channel": "chat", "Name": "welcome"}}}}
+
+User: سويلي رتبة اسمها VIP لونها اخضر و اعطيها صلاحية add_reactions
+Assistant: {{"CreateRole0": {{"Name": "VIP", "Color": "#00FF00", "Position": 0, "Perms": {{"add_reactions": true}}}}}}
+
+User: انطي العضو محمد رتبة الادمن اللي لونها ازرق
+Assistant: {{"GrantRole0": {{"Name": "ادمن اللي لونها ازرق", "Member": "محمد"}}}}
+
+User: بلكي اعمل كاتجوري اسمها Generals
+Assistant: {{"CreateCategory0": {{"Name": "Generals"}}}}
+
+Now: {final}"""
+
+                    parser_res = await deepseek_simple_completion(parser_system, parser_prompt)
+                    print(parser_res)
 
                     try:
-                        raw = json.loads(parser.choices[0].message.content)
+                        raw = json.loads(parser_res)
+                        commands = []
                         for key, value in raw.items():
                             if key.startswith("NoSkill"):
                                 await m.reply(raw[key]["Reply"])
                             else:
                                 commands.append({key: value})
+                        if commands:
+                            await run_commands(commands, m.guild)
                     except Exception as e:
-                        await m.reply(parser.choices[0].message.content)
-
-                    await run_commands(commands, m.guild)
+                        await m.reply(f"حدث خطأ في معالجة الأمر: {e}")
 
 # ================= RUN =================
 client.run(USER_TOKEN)
