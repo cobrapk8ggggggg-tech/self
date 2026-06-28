@@ -1,3 +1,4 @@
 discord.py-self
-groq
+aiohttp
 motor
+groq
