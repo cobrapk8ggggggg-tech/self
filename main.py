@@ -17,7 +17,7 @@ history_col = db["history"]
 # ================= KEYS =================
 USER_TOKEN = os.getenv("USER_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1518721970223583374"))
+ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
 disor = G(api_key=GROQ_API_KEY)
 
