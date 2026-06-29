@@ -9,6 +9,7 @@ Disor Bot — v4.0 "Professional"
                   slowmode, clear_channel, move_member
   5. نظام صلاحيات: رتبة محددة فقط + Slash Commands + DB للـ sessions
   6. نظام إيموجي: 👀 → ⏳ → ☑️
+  7. إضافة دعم لوكيل POW من تليجرام مع إمكانية التبديل عبر سلاش كوماند
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -36,6 +37,13 @@ ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
 # رتبة التحكم — اسم الرتبة اللي تقدر تستخدم البوت (فارغة = الكل)
 CONTROL_ROLE_NAME  = os.getenv("CONTROL_ROLE", "")
+
+# ══════════════════════════════════════════════════════════════
+#  POW Providers
+# ══════════════════════════════════════════════════════════════
+RAILWAY_URL = os.getenv("RAILWAY_URL", "https://web-production-c09dc.up.railway.app")
+POW_PROXY_TELEGRAM = os.getenv("POW_PROXY_TELEGRAM", "http://107.172.78.104:8800")
+DEFAULT_POW_PROVIDER = os.getenv("DEFAULT_POW_PROVIDER", "railway")  # "railway" or "telegram"
 
 # ══════════════════════════════════════════════════════════════
 #  Constants for Attachment Handling
@@ -155,6 +163,29 @@ def member_has_control(member: discord.Member, role_name: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
+#  POW Provider helpers (NEW)
+# ══════════════════════════════════════════════════════════════
+
+async def get_pow_provider(guild_id: int) -> str:
+    """يجيب مزود POW الحالي من DB أو القيمة الافتراضية"""
+    doc = await settings_col.find_one({"guild_id": guild_id})
+    if doc and doc.get("pow_provider"):
+        return doc["pow_provider"]
+    return DEFAULT_POW_PROVIDER
+
+
+async def set_pow_provider(guild_id: int, provider: str):
+    """يحدد مزود POW (railway أو telegram)"""
+    if provider not in ("railway", "telegram"):
+        raise ValueError("provider must be 'railway' or 'telegram'")
+    await settings_col.update_one(
+        {"guild_id": guild_id},
+        {"$set": {"pow_provider": provider}},
+        upsert=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
 #  DB Sessions
 # ══════════════════════════════════════════════════════════════
 
@@ -194,11 +225,8 @@ async def load_latest_session(user_id: int) -> dict | None:
 
 
 # ══════════════════════════════════════════════════════════════
-#  DeepSeek API — Low-level
+#  DeepSeek API — Low-level (modified to support guild_id for POW)
 # ══════════════════════════════════════════════════════════════
-RAILWAY_URL = "https://web-production-c09dc.up.railway.app"
-POW_URL     = f"{RAILWAY_URL}/pow"
-
 
 def _device_id() -> str:
     chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -236,10 +264,29 @@ def _build_headers(pow_response: str, token: str) -> dict:
     }
 
 
-async def _get_pow() -> dict:
+async def _get_pow(guild_id: int) -> dict:
+    """جلب POW باستخدام المزود المحدد للسيرفر"""
     token = DEEPSEEK_TOKEN
+    provider = await get_pow_provider(guild_id)
+
+    if provider == "telegram":
+        url = f"{POW_PROXY_TELEGRAM}/get_pow?authorization={token}"
+        async with aiohttp.ClientSession() as s:
+            try:
+                async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        pr = data.get("x_ds_pow_response") or data.get("pow_response")
+                        if pr:
+                            return {"pow_response": pr, "pow_data": data.get("solved_json")}
+            except Exception:
+                pass
+        raise RuntimeError("POW fetch failed (telegram proxy)")
+
+    # else: railway (default)
+    pow_url = f"{RAILWAY_URL}/pow"
     async with aiohttp.ClientSession() as s:
-        for url in [f"{POW_URL}?authorization={token}", POW_URL]:
+        for url in [f"{pow_url}?authorization={token}", pow_url]:
             try:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     if r.status == 200:
@@ -249,7 +296,7 @@ async def _get_pow() -> dict:
                             return {"pow_response": pr, "pow_data": data.get("solved_json")}
             except Exception:
                 continue
-    raise RuntimeError("POW fetch failed")
+    raise RuntimeError("POW fetch failed (railway)")
 
 
 async def _new_ds_session() -> str:
@@ -288,6 +335,7 @@ def _strip(text: str) -> str:
 
 async def _stream_ds(
     prompt: str,
+    guild_id: int,
     session_id: str | None = None,
     parent_message_id: str | None = None,
 ) -> tuple[str, str, str | None]:
@@ -297,7 +345,7 @@ async def _stream_ds(
     if not session_id:
         session_id = await _new_ds_session()
 
-    pow_d = await _get_pow()
+    pow_d = await _get_pow(guild_id)
     hdrs  = _build_headers(pow_d["pow_response"], token)
     payload = {
         "chat_session_id"  : session_id,
@@ -856,7 +904,7 @@ use_soundboard, use_external_sounds
 
 
 # ══════════════════════════════════════════════════════════════
-#  AGENT LOOP
+#  AGENT LOOP (modified to pass guild_id)
 # ══════════════════════════════════════════════════════════════
 MAX_STEPS = 12
 
@@ -869,6 +917,7 @@ async def run_agent(
     bot_name: str,
     session_id: str | None,
     parent_message_id: str | None,
+    guild_id: int,  # NEW
 ) -> tuple[str, str, str | None, list[str]]:
 
     system     = build_system(bot_name)
@@ -879,7 +928,7 @@ async def run_agent(
     for step in range(MAX_STEPS):
         print(f"[Agent {step+1}/{MAX_STEPS}]")
         try:
-            raw, cur_sid, cur_pmid = await _stream_ds(cur_prompt, cur_sid, cur_pmid)
+            raw, cur_sid, cur_pmid = await _stream_ds(cur_prompt, guild_id, cur_sid, cur_pmid)  # CHANGED
         except Exception as e:
             return f"⚠️ خطأ في الاتصال: {e}", cur_sid, cur_pmid, []
 
@@ -1025,6 +1074,7 @@ async def cmd_help(interaction: discord.Interaction):
 ## ⚙️ إعدادات البوت
 **/رتبة-التحكم** `[اسم الرتبة]` — حدد الرتبة اللي تقدر تستخدم البوت
 **/الرتبة-الحالية** — عرض رتبة التحكم الحالية
+**/مزود-باو** `[railway|telegram]` — تبديل مزود POW (Railway أو Telegram)
 
 ## 🛠️ الأدوات المتاحة للذكاء الاصطناعي
 **قراءة البيانات:**
@@ -1152,6 +1202,32 @@ async def cmd_get_control_role(interaction: discord.Interaction):
 
 
 # ══════════════════════════════════════════════════════════════
+#  NEW SLASH COMMAND: switch POW provider
+# ══════════════════════════════════════════════════════════════
+
+@client.tree.command(name="مزود-باو", description="تبديل مزود POW (Railway أو Telegram)")
+@app_commands.describe(provider="اختر المزود: railway أو telegram")
+async def cmd_set_pow_provider(interaction: discord.Interaction, provider: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ هذا الأمر للأدمن فقط.", ephemeral=True)
+        return
+
+    provider = provider.lower().strip()
+    if provider not in ("railway", "telegram"):
+        await interaction.response.send_message(
+            "❌ المزود يجب أن يكون `railway` أو `telegram`.",
+            ephemeral=True
+        )
+        return
+
+    await set_pow_provider(interaction.guild_id, provider)
+    await interaction.response.send_message(
+        f"✅ تم تبديل مزود POW إلى **{provider}**",
+        ephemeral=True
+    )
+
+
+# ══════════════════════════════════════════════════════════════
 #  EVENTS
 # ══════════════════════════════════════════════════════════════
 
@@ -1273,6 +1349,7 @@ async def on_message(m: discord.Message):
             bot_name          = bot_name,
             session_id        = us["session_id"],
             parent_message_id = us["parent_message_id"],
+            guild_id          = m.guild.id,  # CHANGED: pass guild id
         )
 
         async with session_lock:
