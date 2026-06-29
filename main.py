@@ -20,6 +20,7 @@ import random
 import re
 import time
 import tempfile
+import urllib.parse  # NEW for URL encoding
 from datetime import datetime
 
 import aiohttp
@@ -270,7 +271,9 @@ async def _get_pow(guild_id: int) -> dict:
     provider = await get_pow_provider(guild_id)
 
     if provider == "telegram":
-        url = f"{POW_PROXY_TELEGRAM}/get_pow?authorization={token}"
+        # ترميز التوكن ليكون آمناً في URL
+        encoded_token = urllib.parse.quote(token, safe='')
+        url = f"{POW_PROXY_TELEGRAM}/get_pow?authorization={encoded_token}"
         async with aiohttp.ClientSession() as s:
             try:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
@@ -278,7 +281,9 @@ async def _get_pow(guild_id: int) -> dict:
                         data = await r.json()
                         pr = data.get("x_ds_pow_response") or data.get("pow_response")
                         if pr:
-                            return {"pow_response": pr, "pow_data": data.get("solved_json")}
+                            # قد لا يحتوي الرد على solved_json، نضعه None إذا لم يوجد
+                            pow_data = data.get("solved_json")
+                            return {"pow_response": pr, "pow_data": pow_data}
             except Exception:
                 pass
         raise RuntimeError("POW fetch failed (telegram proxy)")
@@ -347,6 +352,8 @@ async def _stream_ds(
 
     pow_d = await _get_pow(guild_id)
     hdrs  = _build_headers(pow_d["pow_response"], token)
+
+    # بناء الحمولة مع تجنب إضافة pow إذا كان None
     payload = {
         "chat_session_id"  : session_id,
         "parent_message_id": parent_message_id,
@@ -357,9 +364,10 @@ async def _stream_ds(
         "model_type"       : "default",
         "action"           : None,
         "preempt"          : False,
-        "pow"              : pow_d["pow_data"],
         "stream"           : True,
     }
+    if pow_d.get("pow_data") is not None:
+        payload["pow"] = pow_d["pow_data"]
 
     full_text = ""
     new_pmid  = None
@@ -372,7 +380,9 @@ async def _stream_ds(
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
             if resp.status != 200:
-                raise RuntimeError(f"DS {resp.status}: {await resp.text()}")
+                # محاولة قراءة نص الخطأ
+                error_text = await resp.text()
+                raise RuntimeError(f"DS {resp.status}: {error_text}")
             buf = ""
             async for chunk in resp.content.iter_chunked(1024):
                 buf += chunk.decode("utf-8")
