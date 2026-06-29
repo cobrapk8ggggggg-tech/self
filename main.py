@@ -239,7 +239,7 @@ def _build_headers(pow_response: str, token: str) -> dict:
 async def _get_pow() -> dict:
     token = DEEPSEEK_TOKEN
     async with aiohttp.ClientSession() as s:
-        for url in [f"{POW_URL}?authorization={token}", POW_URL]:
+        for url in [f"{POW_API_URL}?authorization={token}", POW_API_URL]:
             try:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     if r.status == 200:
