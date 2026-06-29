@@ -18,6 +18,7 @@ import os
 import random
 import re
 import time
+import tempfile
 from datetime import datetime
 
 import aiohttp
@@ -35,6 +36,59 @@ ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
 # رتبة التحكم — اسم الرتبة اللي تقدر تستخدم البوت (فارغة = الكل)
 CONTROL_ROLE_NAME  = os.getenv("CONTROL_ROLE", "")
+
+# ══════════════════════════════════════════════════════════════
+#  Constants for Attachment Handling
+# ══════════════════════════════════════════════════════════════
+MAX_ATTACHMENT_BYTES = 1_000_000  # 1 MB max read per file
+TEXT_EXTENSIONS = {
+    '.py', '.js', '.ts', '.html', '.css', '.json', '.txt', '.md',
+    '.sql', '.java', '.c', '.cpp', '.rb', '.go', '.rs', '.swift',
+    '.kt', '.php', '.xml', '.yaml', '.yml', '.ini', '.cfg', '.sh',
+    '.bat', '.ps1', '.log', '.csv', '.tsv', '.r', '.lua', '.pl',
+    '.scala', '.dart', '.jsp', '.asp', '.aspx', '.cs', '.vb',
+    '.fs', '.fsx', '.psm1', '.psd1', '.toml', '.lock', '.env',
+    '.gitignore', '.dockerfile', '.makefile', '.gradle', '.properties',
+    '.conf', '.config', '.h', '.hpp', '.hxx', '.mm', '.m', '.swift',
+    '.kt', '.kts', '.clj', '.cljs', '.edn', '.erl', '.hrl',
+    '.ex', '.exs', '.elm', '.purs', '.vue', '.svelte', '.astro',
+    '.jsx', '.tsx', '.tf', '.bicep', '.cmake', '.qml', '.rpy',
+    '.gd', '.csproj', '.sln', '.vbproj', '.fsproj', '.nuspec',
+    '.resx', '.xaml', '.axaml', '.svg', '.graphql', '.gql',
+    '.proto', '.thrift', '.avsc', '.capnp', '.prisma', '.razor',
+    '.blade', '.twig', '.liquid', '.haml', '.slim', '.pug',
+    '.jade', '.mustache', '.handlebars', '.ejs', '.njk',
+    '.marko', '.riot', '.tag', '.vue', '.svelte', '.styl',
+    '.less', '.scss', '.sass', '.postcss', '.pcss',
+    '.coffee', '.litcoffee', '.iced', '.cjsx',
+    '.dockerignore', '.editorconfig', '.eslintrc', '.prettierrc',
+    '.babelrc', '.browserslistrc', '.stylelintrc', '.commitlintrc',
+    '.renovaterc', '.npmrc', '.yarnrc', '.buckconfig',
+    '.bazelrc', '.bazel', '.workspace', '.bzl',
+    '.txt', '.md', '.rst', '.adoc', '.asciidoc', '.org',
+    '.tex', '.bib', '.sty', '.cls', '.dtx', '.ins',
+    '.tikz', '.pgf', '.gnuplot', '.plt', '.plot',
+    '.sage', '.sagews', '.spyx', '.pyx', '.pxd', '.pxi',
+    '.ipynb', '.r', '.rmd', '.qmd', '.jl', '.pl',
+    '.pm', '.t', '.psgi', '.pod', '.rhtml', '.rjs',
+    '.erb', '.haml', '.slim', '.jbuilder', '.rabl',
+    '.rxml', '.rss', '.atom', '.opml', '.rng', '.xsd',
+    '.dtd', '.ent', '.mod', '.owl', '.rdf', '.ttl',
+    '.nt', '.jsonld', '.nq', '.trig', '.trix',
+    '.sparql', '.srx', '.sparql', '.shacl', '.shex',
+}
+TEXT_CONTENT_TYPES = {'text/', 'application/json', 'application/xml', 'application/javascript'}
+
+def is_text_attachment(attachment: discord.Attachment) -> bool:
+    """Check if attachment is likely text-based."""
+    if attachment.content_type:
+        for prefix in TEXT_CONTENT_TYPES:
+            if attachment.content_type.startswith(prefix):
+                return True
+    _, ext = os.path.splitext(attachment.filename.lower())
+    if ext in TEXT_EXTENSIONS:
+        return True
+    return False
 
 # ══════════════════════════════════════════════════════════════
 #  MongoDB
@@ -731,6 +785,7 @@ get_members               → قائمة الأعضاء (اختياري: query �
 get_messages              → آخر رسائل القناة الحالية (اختياري: limit, member_id)
 server_info               → معلومات عامة عن السيرفر
 execute                   → تنفيذ عملية
+file                      → إنشاء ملف وإرساله للمستخدم (JSON بالمفتاح "file" يحتوي على "name" و "content")
 
 ══════════════════════════════════════════════
 عمليات execute
@@ -777,8 +832,14 @@ use_soundboard, use_external_sounds
   {{"tool": "get_channels"}}
   أو
   {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم جديد", "type": "text"}}}}
-  
-· أبداً ما ترجع JSON فيه مفتاح "reply". الرد النهائي يكون نص طبيعي بحت بعد ما تخلص الأدوات.
+
+- إذا أردت إنشاء ملف وإرساله، استخدم:
+  ```json
+  {{"file": {{"name": "script.py", "content": "print('hello')"}}}}
+  يمكنك أيضاً دمج "reply" مع الملف إذا أردت رسالة مصاحبة:
+  {{"reply": "تفضل الملف", "file": {{"name": "code.js", "content": "console.log(1)"}}}}
+
+· أبداً ما ترجع JSON فيه مفتاح "reply" فقط. الرد النهائي يكون نص طبيعي بحت بعد ما تخلص الأدوات.
 
 قواعد جديدة:
 1. لا رسائل تأكيد — نفذ العملية مباشرة وأخبر بالنتيجة بأسلوبك الطبيعي.
@@ -804,7 +865,7 @@ async def run_agent(
     bot_name: str,
     session_id: str | None,
     parent_message_id: str | None,
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str, str | None, list[str]]:
 
     system     = build_system(bot_name)
     cur_sid    = session_id
@@ -816,7 +877,7 @@ async def run_agent(
         try:
             raw, cur_sid, cur_pmid = await _stream_ds(cur_prompt, cur_sid, cur_pmid)
         except Exception as e:
-            return f"⚠️ خطأ في الاتصال: {e}", cur_sid, cur_pmid
+            return f"⚠️ خطأ في الاتصال: {e}", cur_sid, cur_pmid, []
 
         print(f"  raw: {raw[:300]}")
 
@@ -830,14 +891,37 @@ async def run_agent(
                 pass
 
         if parsed is None:
-            return raw, cur_sid, cur_pmid
+            return raw, cur_sid, cur_pmid, []
+
+        # handle file generation
+        if "file" in parsed:
+            file_info = parsed["file"]
+            if not isinstance(file_info, dict) or "name" not in file_info or "content" not in file_info:
+                return raw, cur_sid, cur_pmid, []  # invalid, return as text
+            safe_name = os.path.basename(file_info["name"])
+            if not safe_name:
+                safe_name = "output.txt"
+            # sanitize extension
+            content = str(file_info["content"])
+            try:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
+                )
+                tmp.write(content)
+                tmp.close()
+                file_path = tmp.name
+            except Exception as e:
+                return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
+
+            reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
+            return reply_text, cur_sid, cur_pmid, [file_path]
 
         if "reply" in parsed:
-            return parsed["reply"], cur_sid, cur_pmid
+            return parsed["reply"], cur_sid, cur_pmid, []
 
         tool = parsed.get("tool", "")
         if not tool:
-            return raw, cur_sid, cur_pmid
+            return raw, cur_sid, cur_pmid, []
 
         # ── تنفيذ الأداة ──
         result: dict = {}
@@ -883,7 +967,7 @@ async def run_agent(
             f"استكمل."
         )
 
-    return "✅ تم.", cur_sid, cur_pmid
+    return "✅ تم.", cur_sid, cur_pmid, []
 
 
 # ══════════════════════════════════════════════════════════════
@@ -924,6 +1008,10 @@ async def cmd_help(interaction: discord.Interaction):
 **إدارة الأعضاء:**
 - كيك / بان / تغيير نكنيم
 - نقل عضو لفويس
+
+## 📎 التعامل مع الملفات
+- ارفع ملف كود أو نص مع رسالتك وسيقرؤه البوت
+- يمكن للبوت إنشاء ملفات وارسالها (اطلب منه ذلك)
 
 > **تلميح:** كل الأوامر تشتغل بالاسم أو الـ ID"""
 
@@ -1073,6 +1161,30 @@ async def on_message(m: discord.Message):
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
     final = content.strip()
 
+    # ── معالجة المرفقات ──
+    if m.attachments:
+        for att in m.attachments:
+            if is_text_attachment(att):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(att.url) as resp:
+                            if resp.status != 200:
+                                final += f"\n[ملف: {att.filename}] (فشل التحميل)"
+                                continue
+                            # قراءة حتى الحجم الأقصى
+                            data = await resp.content.read(MAX_ATTACHMENT_BYTES)
+                            text = data.decode('utf-8', errors='replace')
+                            if len(data) >= MAX_ATTACHMENT_BYTES:
+                                text += "\n... (تم اقتطاع الملف لكبر حجمه)"
+                            # إضافة تنسيق الكود
+                            _, ext = os.path.splitext(att.filename)
+                            lang = ext.lstrip('.') if ext else ''
+                            final += f"\n[ملف: {att.filename}]\n```{lang}\n{text}\n```"
+                except Exception as e:
+                    final += f"\n[ملف: {att.filename}] (خطأ: {e})"
+            else:
+                final += f"\n[ملف غير نصي: {att.filename}]"
+
     if not final:
         await m.reply("وين أساعدك؟ 😄")
         return
@@ -1118,7 +1230,7 @@ async def on_message(m: discord.Message):
 
     async with m.channel.typing():
         try:
-            reply, new_sid, new_pmid = await run_agent(
+            reply, new_sid, new_pmid, generated_files = await run_agent(
                 guild             = m.guild,
                 channel           = m.channel,
                 user_msg          = final,
@@ -1139,10 +1251,26 @@ async def on_message(m: discord.Message):
 
             reply = reply or "✅ تم."
 
-            # إرسال مع تقسيم
+            # إرسال الرد مع الملفات إن وجدت
             chunks = [reply[i:i+1990] for i in range(0, len(reply), 1990)]
-            for chunk in chunks:
-                await m.reply(chunk)
+            if generated_files:
+                discord_files = [discord.File(fp) for fp in generated_files]
+                if chunks:
+                    # أول جزء مع الملفات
+                    await m.reply(content=chunks[0], files=discord_files)
+                    for chunk in chunks[1:]:
+                        await m.channel.send(chunk)
+                else:
+                    await m.reply(files=discord_files)
+                # تنظيف الملفات المؤقتة
+                for fp in generated_files:
+                    try:
+                        os.unlink(fp)
+                    except Exception:
+                        pass
+            else:
+                for chunk in chunks:
+                    await m.reply(chunk)
 
             # ── نظام الإيموجي: استبدال ⏳ بـ ☑️ (تم) ──
             try:
