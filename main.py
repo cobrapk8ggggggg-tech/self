@@ -1,15 +1,18 @@
 """
-Disor Bot — v4.0 "Professional"
+Disor Bot — v5.0 "Legendary"
 ═══════════════════════════════════════════════════════════════
 الجديد في هذا الإصدار:
-  1. _find_member يدعم البحث بالـ ID رقمياً
-  2. Markdown متوافق 100% مع Discord (لا جداول، لا HTML)
-  3. نداء الأعضاء بشكل طبيعي ومريح
-  4. أدوات جديدة: get_messages, delete_messages, server_info,
-                  slowmode, clear_channel, move_member
-  5. نظام صلاحيات: رتبة محددة فقط + Slash Commands + DB للـ sessions
-  6. نظام إيموجي: 👀 → ⏳ → ☑️
-  7. إضافة دعم لوكيل POW من تليجرام مع إمكانية التبديل عبر سلاش كوماند
+  1. وعي البوت الكامل: معلومات عن نفسه (سيرفراته، رتبه، بايو، صلاحياته)
+  2. نظام قنوات متعدد: قائمة قنوات مسموحة لكل سيرفر (add/remove/list)
+  3. نوع المحادثة: default أو expert (model_type يُمرر للـ API)
+  4. حفظ نوع المحادثة في DB + عرضه في /محادثاتي
+  5. نفس الجلسة عبر قنوات مختلفة في نفس السيرفر
+  6. الأوامر المضافة:
+       /قنوات-مسموحة   — عرض القنوات المسموحة
+       /إضافة-قناة     — إضافة قناة
+       /حذف-قناة       — حذف قناة من القائمة
+       /محادثة-جديدة   — يتضمن اختيار النوع (default / expert)
+  7. كل ميزات v4 محفوظة
 ═══════════════════════════════════════════════════════════════
 """
 
@@ -20,7 +23,7 @@ import random
 import re
 import time
 import tempfile
-import urllib.parse  # NEW for URL encoding
+import urllib.parse
 from datetime import datetime
 
 import aiohttp
@@ -34,81 +37,61 @@ from motor.motor_asyncio import AsyncIOMotorClient
 MONGODB_URI        = os.getenv("MONGODB_URI")
 USER_TOKEN         = os.getenv("USER_TOKEN")
 DEEPSEEK_TOKEN     = os.getenv("DEEPSEEK_TOKEN")
-ALLOWED_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "1356830719170842710"))
 
-# رتبة التحكم — اسم الرتبة اللي تقدر تستخدم البوت (فارغة = الكل)
+# القناة الافتراضية (إذا لم تُضف قنوات في DB، يستخدم هذي)
+DEFAULT_CHANNEL_ID = int(os.getenv("ALLOWED_CHANNEL_ID", "0"))
+
 CONTROL_ROLE_NAME  = os.getenv("CONTROL_ROLE", "")
 
 # ══════════════════════════════════════════════════════════════
 #  POW Providers
 # ══════════════════════════════════════════════════════════════
-RAILWAY_URL = os.getenv("RAILWAY_URL", "https://web-production-c09dc.up.railway.app")
-POW_PROXY_TELEGRAM = os.getenv("POW_PROXY_TELEGRAM", "http://107.172.78.104:8800")
-DEFAULT_POW_PROVIDER = os.getenv("DEFAULT_POW_PROVIDER", "railway")  # "railway" or "telegram"
+RAILWAY_URL           = os.getenv("RAILWAY_URL", "https://web-production-c09dc.up.railway.app")
+POW_PROXY_TELEGRAM    = os.getenv("POW_PROXY_TELEGRAM", "http://107.172.78.104:8800")
+DEFAULT_POW_PROVIDER  = os.getenv("DEFAULT_POW_PROVIDER", "railway")
 
 # ══════════════════════════════════════════════════════════════
-#  Constants for Attachment Handling
+#  Attachment Handling
 # ══════════════════════════════════════════════════════════════
-MAX_ATTACHMENT_BYTES = 1_000_000  # 1 MB max read per file
+MAX_ATTACHMENT_BYTES = 1_000_000
 TEXT_EXTENSIONS = {
     '.py', '.js', '.ts', '.html', '.css', '.json', '.txt', '.md',
     '.sql', '.java', '.c', '.cpp', '.rb', '.go', '.rs', '.swift',
     '.kt', '.php', '.xml', '.yaml', '.yml', '.ini', '.cfg', '.sh',
     '.bat', '.ps1', '.log', '.csv', '.tsv', '.r', '.lua', '.pl',
-    '.scala', '.dart', '.jsp', '.asp', '.aspx', '.cs', '.vb',
-    '.fs', '.fsx', '.psm1', '.psd1', '.toml', '.lock', '.env',
-    '.gitignore', '.dockerfile', '.makefile', '.gradle', '.properties',
-    '.conf', '.config', '.h', '.hpp', '.hxx', '.mm', '.m', '.swift',
-    '.kt', '.kts', '.clj', '.cljs', '.edn', '.erl', '.hrl',
-    '.ex', '.exs', '.elm', '.purs', '.vue', '.svelte', '.astro',
-    '.jsx', '.tsx', '.tf', '.bicep', '.cmake', '.qml', '.rpy',
-    '.gd', '.csproj', '.sln', '.vbproj', '.fsproj', '.nuspec',
-    '.resx', '.xaml', '.axaml', '.svg', '.graphql', '.gql',
-    '.proto', '.thrift', '.avsc', '.capnp', '.prisma', '.razor',
-    '.blade', '.twig', '.liquid', '.haml', '.slim', '.pug',
-    '.jade', '.mustache', '.handlebars', '.ejs', '.njk',
-    '.marko', '.riot', '.tag', '.vue', '.svelte', '.styl',
-    '.less', '.scss', '.sass', '.postcss', '.pcss',
-    '.coffee', '.litcoffee', '.iced', '.cjsx',
+    '.scala', '.dart', '.jsx', '.tsx', '.tf', '.bicep', '.cmake',
+    '.graphql', '.gql', '.proto', '.prisma', '.razor', '.blade',
+    '.twig', '.liquid', '.haml', '.pug', '.mustache', '.handlebars',
+    '.ejs', '.njk', '.styl', '.less', '.scss', '.sass', '.coffee',
     '.dockerignore', '.editorconfig', '.eslintrc', '.prettierrc',
-    '.babelrc', '.browserslistrc', '.stylelintrc', '.commitlintrc',
-    '.renovaterc', '.npmrc', '.yarnrc', '.buckconfig',
-    '.bazelrc', '.bazel', '.workspace', '.bzl',
-    '.txt', '.md', '.rst', '.adoc', '.asciidoc', '.org',
-    '.tex', '.bib', '.sty', '.cls', '.dtx', '.ins',
-    '.tikz', '.pgf', '.gnuplot', '.plt', '.plot',
-    '.sage', '.sagews', '.spyx', '.pyx', '.pxd', '.pxi',
-    '.ipynb', '.r', '.rmd', '.qmd', '.jl', '.pl',
-    '.pm', '.t', '.psgi', '.pod', '.rhtml', '.rjs',
-    '.erb', '.haml', '.slim', '.jbuilder', '.rabl',
-    '.rxml', '.rss', '.atom', '.opml', '.rng', '.xsd',
-    '.dtd', '.ent', '.mod', '.owl', '.rdf', '.ttl',
-    '.nt', '.jsonld', '.nq', '.trig', '.trix',
-    '.sparql', '.srx', '.sparql', '.shacl', '.shex',
+    '.babelrc', '.npmrc', '.yarnrc', '.bazel', '.toml', '.lock',
+    '.env', '.gitignore', '.dockerfile', '.makefile', '.ipynb',
+    '.vue', '.svelte', '.astro', '.elm', '.ex', '.exs', '.erl',
+    '.clj', '.fs', '.fsx', '.hrl', '.rpy', '.gd',
 }
 TEXT_CONTENT_TYPES = {'text/', 'application/json', 'application/xml', 'application/javascript'}
 
+
 def is_text_attachment(attachment: discord.Attachment) -> bool:
-    """Check if attachment is likely text-based."""
     if attachment.content_type:
         for prefix in TEXT_CONTENT_TYPES:
             if attachment.content_type.startswith(prefix):
                 return True
     _, ext = os.path.splitext(attachment.filename.lower())
-    if ext in TEXT_EXTENSIONS:
-        return True
-    return False
+    return ext in TEXT_EXTENSIONS
+
 
 # ══════════════════════════════════════════════════════════════
 #  MongoDB
 # ══════════════════════════════════════════════════════════════
 mongo_client  = AsyncIOMotorClient(MONGODB_URI)
 db            = mongo_client["disor_db"]
-sessions_col  = db["chat_sessions"]   # حفظ الـ DS sessions
-settings_col  = db["settings"]        # إعدادات البوت (رتبة التحكم، إلخ)
+sessions_col  = db["chat_sessions"]
+settings_col  = db["settings"]
+channels_col  = db["allowed_channels"]   # قنوات مسموحة لكل سيرفر
 
 # ══════════════════════════════════════════════════════════════
-#  Discord — Client + CommandTree
+#  Discord Client
 # ══════════════════════════════════════════════════════════════
 intents                 = discord.Intents.default()
 intents.members         = True
@@ -129,17 +112,62 @@ class DisorClient(discord.Client):
 client = DisorClient()
 
 # ══════════════════════════════════════════════════════════════
-#  RAM Sessions Cache  { user_id: {"session_id", "parent_message_id"} }
+#  RAM Cache
+#  user_sessions: { (guild_id, user_id): {session_id, parent_message_id, mode} }
 # ══════════════════════════════════════════════════════════════
-user_sessions: dict[int, dict] = {}
+user_sessions: dict[tuple[int, int], dict] = {}
 session_lock  = asyncio.Lock()
+
+# Cache للقنوات المسموحة { guild_id: set[channel_id] }
+allowed_channels_cache: dict[int, set[int]] = {}
+
+# ══════════════════════════════════════════════════════════════
+#  Allowed Channels DB helpers
+# ══════════════════════════════════════════════════════════════
+
+async def get_allowed_channels(guild_id: int) -> set[int]:
+    """يجيب القنوات المسموحة من الكاش أو DB"""
+    if guild_id in allowed_channels_cache:
+        return allowed_channels_cache[guild_id]
+
+    doc = await channels_col.find_one({"guild_id": guild_id})
+    if doc and doc.get("channel_ids"):
+        ids = set(doc["channel_ids"])
+    elif DEFAULT_CHANNEL_ID:
+        ids = {DEFAULT_CHANNEL_ID}
+    else:
+        ids = set()
+
+    allowed_channels_cache[guild_id] = ids
+    return ids
+
+
+async def add_allowed_channel(guild_id: int, channel_id: int):
+    ids = await get_allowed_channels(guild_id)
+    ids.add(channel_id)
+    allowed_channels_cache[guild_id] = ids
+    await channels_col.update_one(
+        {"guild_id": guild_id},
+        {"$addToSet": {"channel_ids": channel_id}},
+        upsert=True,
+    )
+
+
+async def remove_allowed_channel(guild_id: int, channel_id: int):
+    ids = await get_allowed_channels(guild_id)
+    ids.discard(channel_id)
+    allowed_channels_cache[guild_id] = ids
+    await channels_col.update_one(
+        {"guild_id": guild_id},
+        {"$pull": {"channel_ids": channel_id}},
+    )
+
 
 # ══════════════════════════════════════════════════════════════
 #  Control Role helpers
 # ══════════════════════════════════════════════════════════════
 
 async def get_control_role(guild_id: int) -> str:
-    """يجيب اسم رتبة التحكم من DB أو ENV"""
     doc = await settings_col.find_one({"guild_id": guild_id})
     if doc and doc.get("control_role"):
         return doc["control_role"]
@@ -155,20 +183,18 @@ async def set_control_role(guild_id: int, role_name: str):
 
 
 def member_has_control(member: discord.Member, role_name: str) -> bool:
-    """هل العضو عنده رتبة التحكم؟"""
     if not role_name:
-        return True   # لا قيود — الكل يقدر يستخدم
+        return True
     if member.guild_permissions.administrator:
-        return True   # الأدمن دايماً يقدر
+        return True
     return any(r.name.lower() == role_name.lower() for r in member.roles)
 
 
 # ══════════════════════════════════════════════════════════════
-#  POW Provider helpers (NEW)
+#  POW Provider helpers
 # ══════════════════════════════════════════════════════════════
 
 async def get_pow_provider(guild_id: int) -> str:
-    """يجيب مزود POW الحالي من DB أو القيمة الافتراضية"""
     doc = await settings_col.find_one({"guild_id": guild_id})
     if doc and doc.get("pow_provider"):
         return doc["pow_provider"]
@@ -176,7 +202,6 @@ async def get_pow_provider(guild_id: int) -> str:
 
 
 async def set_pow_provider(guild_id: int, provider: str):
-    """يحدد مزود POW (railway أو telegram)"""
     if provider not in ("railway", "telegram"):
         raise ValueError("provider must be 'railway' or 'telegram'")
     await settings_col.update_one(
@@ -190,43 +215,151 @@ async def set_pow_provider(guild_id: int, provider: str):
 #  DB Sessions
 # ══════════════════════════════════════════════════════════════
 
-async def db_save_session(user_id: int, label: str, session_id: str, parent_message_id: str | None):
+async def db_save_session(
+    user_id: int,
+    guild_id: int,
+    label: str,
+    session_id: str,
+    parent_message_id: str | None,
+    mode: str = "default",
+):
     await sessions_col.update_one(
-        {"user_id": user_id, "label": label},
+        {"user_id": user_id, "guild_id": guild_id, "label": label},
         {"$set": {
             "session_id"       : session_id,
             "parent_message_id": parent_message_id,
+            "mode"             : mode,
             "updated_at"       : datetime.utcnow(),
         }},
         upsert=True,
     )
 
 
-async def db_get_sessions(user_id: int) -> list[dict]:
-    cursor = sessions_col.find({"user_id": user_id}).sort("updated_at", -1).limit(10)
+async def db_get_sessions(user_id: int, guild_id: int) -> list[dict]:
+    cursor = (
+        sessions_col
+        .find({"user_id": user_id, "guild_id": guild_id})
+        .sort("updated_at", -1)
+        .limit(10)
+    )
     return await cursor.to_list(length=10)
 
 
-async def db_delete_session(user_id: int, label: str):
-    await sessions_col.delete_one({"user_id": user_id, "label": label})
+async def db_delete_session(user_id: int, guild_id: int, label: str):
+    await sessions_col.delete_one({"user_id": user_id, "guild_id": guild_id, "label": label})
 
 
-async def load_latest_session(user_id: int) -> dict | None:
-    """تحميل أحدث جلسة محفوظة من قاعدة البيانات"""
+async def load_latest_session(user_id: int, guild_id: int) -> dict | None:
     doc = await sessions_col.find_one(
-        {"user_id": user_id},
-        sort=[("updated_at", -1)]  # الأحدث أولاً
+        {"user_id": user_id, "guild_id": guild_id},
+        sort=[("updated_at", -1)],
     )
     if doc and doc.get("session_id"):
         return {
-            "session_id": doc["session_id"],
-            "parent_message_id": doc.get("parent_message_id")
+            "session_id"       : doc["session_id"],
+            "parent_message_id": doc.get("parent_message_id"),
+            "mode"             : doc.get("mode", "default"),
         }
     return None
 
 
 # ══════════════════════════════════════════════════════════════
-#  DeepSeek API — Low-level (modified to support guild_id for POW)
+#  Bot Self-Awareness helpers
+# ══════════════════════════════════════════════════════════════
+
+async def build_bot_context(guild: discord.Guild) -> str:
+    """يبني سياقاً شاملاً عن البوت نفسه لتزويد الـ AI"""
+    bot_member = guild.get_member(client.user.id)
+
+    # ── معلومات أساسية ──
+    bot_user  = client.user
+    bot_name  = bot_user.display_name or bot_user.name
+    bot_id    = bot_user.id
+    bot_disc  = getattr(bot_user, 'discriminator', '0')
+    bot_tag   = f"{bot_user.name}#{bot_disc}" if bot_disc != '0' else f"@{bot_user.name}"
+    created   = bot_user.created_at.strftime("%Y-%m-%d")
+    guild_cnt = len(client.guilds)
+
+    # ── بايو / وصف ──
+    bio = "غير متوفر"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"https://discord.com/api/v10/users/{bot_id}",
+                headers={"Authorization": f"Bot {USER_TOKEN}"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    bio = data.get("bio") or "غير متوفر"
+    except Exception:
+        pass
+
+    # ── رتب البوت في السيرفر الحالي ──
+    bot_roles: list[str] = []
+    bot_perms_list: list[str] = []
+    highest_role = "@everyone"
+    is_admin     = False
+
+    if bot_member:
+        bot_roles = [r.name for r in bot_member.roles if r.name != "@everyone"]
+        highest_role = bot_member.top_role.name
+        perms = bot_member.guild_permissions
+        is_admin = perms.administrator
+        if is_admin:
+            bot_perms_list = ["administrator (كل الصلاحيات)"]
+        else:
+            bot_perms_list = [p for p, v in perms if v]
+
+    # ── القنوات المسموحة ──
+    allowed_ids = await get_allowed_channels(guild.id)
+    allowed_names = []
+    for cid in allowed_ids:
+        ch = guild.get_channel(cid)
+        allowed_names.append(f"#{ch.name}" if ch else f"ID:{cid}")
+
+    # ── موقع البوت في السيرفر الحالي ──
+    guild_name   = guild.name
+    guild_id_str = str(guild.id)
+    member_count = guild.member_count
+    owner        = guild.owner
+    owner_name   = owner.display_name if owner else "غير معروف"
+
+    # ── بناء النص ──
+    lines = [
+        "══════════════════════════════════",
+        "  [معلومات البوت — السياق الكامل]",
+        "══════════════════════════════════",
+        f"  الاسم             : {bot_name}",
+        f"  التاق             : {bot_tag}",
+        f"  الـ ID            : {bot_id}",
+        f"  تاريخ الإنشاء    : {created}",
+        f"  البايو            : {bio}",
+        f"  عدد السيرفرات    : {guild_cnt} سيرفر",
+        "",
+        "  [السيرفر الحالي]",
+        f"  الاسم             : {guild_name}",
+        f"  الـ ID            : {guild_id_str}",
+        f"  عدد الأعضاء      : {member_count}",
+        f"  الأونر            : {owner_name}",
+        "",
+        "  [رتب البوت في هذا السيرفر]",
+        f"  الرتب             : {', '.join(bot_roles) if bot_roles else 'لا رتب'}",
+        f"  أعلى رتبة        : {highest_role}",
+        f"  أدمن؟             : {'نعم ✅' if is_admin else 'لا ❌'}",
+        "",
+        "  [صلاحياته في هذا السيرفر]",
+        f"  {', '.join(bot_perms_list) if bot_perms_list else 'لا صلاحيات'}",
+        "",
+        "  [القنوات التي يستمع فيها البوت]",
+        f"  {', '.join(allowed_names) if allowed_names else 'لم تُحدد قنوات'}",
+        "══════════════════════════════════",
+    ]
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
+#  DeepSeek API
 # ══════════════════════════════════════════════════════════════
 
 def _device_id() -> str:
@@ -266,12 +399,10 @@ def _build_headers(pow_response: str, token: str) -> dict:
 
 
 async def _get_pow(guild_id: int) -> dict:
-    """جلب POW باستخدام المزود المحدد للسيرفر"""
-    token = DEEPSEEK_TOKEN
+    token    = DEEPSEEK_TOKEN
     provider = await get_pow_provider(guild_id)
 
     if provider == "telegram":
-        # ترميز التوكن ليكون آمناً في URL
         encoded_token = urllib.parse.quote(token, safe='')
         url = f"{POW_PROXY_TELEGRAM}/get_pow?authorization={encoded_token}"
         async with aiohttp.ClientSession() as s:
@@ -281,14 +412,11 @@ async def _get_pow(guild_id: int) -> dict:
                         data = await r.json()
                         pr = data.get("x_ds_pow_response") or data.get("pow_response")
                         if pr:
-                            # قد لا يحتوي الرد على solved_json، نضعه None إذا لم يوجد
-                            pow_data = data.get("solved_json")
-                            return {"pow_response": pr, "pow_data": pow_data}
+                            return {"pow_response": pr, "pow_data": data.get("solved_json")}
             except Exception:
                 pass
         raise RuntimeError("POW fetch failed (telegram proxy)")
 
-    # else: railway (default)
     pow_url = f"{RAILWAY_URL}/pow"
     async with aiohttp.ClientSession() as s:
         for url in [f"{pow_url}?authorization={token}", pow_url]:
@@ -343,6 +471,7 @@ async def _stream_ds(
     guild_id: int,
     session_id: str | None = None,
     parent_message_id: str | None = None,
+    mode: str = "default",
 ) -> tuple[str, str, str | None]:
     token = DEEPSEEK_TOKEN
     if not token:
@@ -353,15 +482,17 @@ async def _stream_ds(
     pow_d = await _get_pow(guild_id)
     hdrs  = _build_headers(pow_d["pow_response"], token)
 
-    # بناء الحمولة مع تجنب إضافة pow إذا كان None
+    # model_type: "default" أو "expert" (DeepThink)
+    model_type = "chat" if mode == "expert" else "default"
+
     payload = {
         "chat_session_id"  : session_id,
         "parent_message_id": parent_message_id,
         "prompt"           : prompt,
         "ref_file_ids"     : [],
-        "thinking_enabled" : False,
+        "thinking_enabled" : mode == "expert",
         "search_enabled"   : False,
-        "model_type"       : "default",
+        "model_type"       : model_type,
         "action"           : None,
         "preempt"          : False,
         "stream"           : True,
@@ -380,7 +511,6 @@ async def _stream_ds(
             timeout=aiohttp.ClientTimeout(total=120),
         ) as resp:
             if resp.status != 200:
-                # محاولة قراءة نص الخطأ
                 error_text = await resp.text()
                 raise RuntimeError(f"DS {resp.status}: {error_text}")
             buf = ""
@@ -409,11 +539,10 @@ async def _stream_ds(
 
 
 # ══════════════════════════════════════════════════════════════
-#  Guild Lookup — يدعم الاسم والـ ID
+#  Guild Lookup helpers
 # ══════════════════════════════════════════════════════════════
 
 def _find_channel(guild: discord.Guild, q: str) -> discord.abc.GuildChannel | None:
-    # بحث بالـ ID
     try:
         ch = guild.get_channel(int(q))
         if ch:
@@ -465,7 +594,6 @@ def _find_role(guild: discord.Guild, q: str) -> discord.Role | None:
 
 
 def _find_member(guild: discord.Guild, q: str) -> discord.Member | None:
-    # ── بحث بالـ ID أولاً (رقم أو نص رقمي) ──
     try:
         mid = int(str(q).strip())
         m   = guild.get_member(mid)
@@ -474,10 +602,7 @@ def _find_member(guild: discord.Guild, q: str) -> discord.Member | None:
     except (ValueError, TypeError):
         pass
 
-    # ── بحث بالاسم ──
     ql = str(q).lower().strip()
-
-    # exact match
     for m in guild.members:
         if m.name.lower() == ql:
             return m
@@ -485,8 +610,6 @@ def _find_member(guild: discord.Guild, q: str) -> discord.Member | None:
             return m
         if m.global_name and m.global_name.lower() == ql:
             return m
-
-    # partial match
     for m in guild.members:
         if ql in m.name.lower():
             return m
@@ -494,7 +617,6 @@ def _find_member(guild: discord.Guild, q: str) -> discord.Member | None:
             return m
         if m.global_name and ql in m.global_name.lower():
             return m
-
     return None
 
 
@@ -585,17 +707,16 @@ async def tool_get_messages(
     limit: int = 100,
     member_id: int | None = None,
 ) -> dict:
-    """يجيب آخر N رسالة من قناة — اختياري: فلتر بالعضو"""
     msgs = []
     async for msg in channel.history(limit=min(limit, 500)):
         if member_id and msg.author.id != member_id:
             continue
         msgs.append({
-            "id"     : msg.id,
-            "author" : msg.author.display_name,
+            "id"      : msg.id,
+            "author"  : msg.author.display_name,
             "author_id": msg.author.id,
-            "content": msg.content[:500],
-            "time"   : msg.created_at.strftime("%Y-%m-%d %H:%M"),
+            "content" : msg.content[:500],
+            "time"    : msg.created_at.strftime("%Y-%m-%d %H:%M"),
         })
     return {"messages": msgs, "count": len(msgs)}
 
@@ -606,16 +727,13 @@ async def tool_execute(
     action: str,
     params: dict,
 ) -> dict:
-    """تنفذ عملية واحدة وترجع النتيجة"""
     try:
         a = action.lower().strip()
 
-        # ── create_category ─────────────────────────────────
         if a == "create_category":
             cat = await guild.create_category(name=params["name"])
             return {"ok": True, "msg": f"✅ تم إنشاء الكاتيكوري **{cat.name}**"}
 
-        # ── create_channel ───────────────────────────────────
         elif a == "create_channel":
             cat_obj = None
             if params.get("category"):
@@ -627,7 +745,6 @@ async def tool_execute(
             loc = f" تحت **{cat_obj.name}**" if cat_obj else ""
             return {"ok": True, "msg": f"✅ تم إنشاء الروم **{ch.name}**{loc}"}
 
-        # ── delete_channel ───────────────────────────────────
         elif a == "delete_channel":
             ch = _find_channel(guild, str(params["name"]))
             if not ch:
@@ -636,7 +753,6 @@ async def tool_execute(
             await ch.delete()
             return {"ok": True, "msg": f"✅ تم حذف الروم **{name}**"}
 
-        # ── rename_channel ───────────────────────────────────
         elif a == "rename_channel":
             ch = _find_channel(guild, str(params["channel"]))
             if not ch:
@@ -645,18 +761,16 @@ async def tool_execute(
             await ch.edit(name=params["new_name"])
             return {"ok": True, "msg": f"✅ تم تغيير اسم **{old}** → **{params['new_name']}**"}
 
-        # ── clear_channel ────────────────────────────────────
         elif a == "clear_channel":
             target_ch = channel
             if params.get("channel"):
                 found = _find_channel(guild, str(params["channel"]))
                 if found and isinstance(found, discord.TextChannel):
                     target_ch = found
-            limit = int(params.get("limit", 100))
+            limit   = int(params.get("limit", 100))
             deleted = await target_ch.purge(limit=min(limit, 500))
             return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
 
-        # ── delete_member_messages ───────────────────────────
         elif a == "delete_member_messages":
             member = _find_member(guild, str(params["member"]))
             if not member:
@@ -673,7 +787,6 @@ async def tool_execute(
             )
             return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة للعضو **{member.display_name}**"}
 
-        # ── create_role ──────────────────────────────────────
         elif a == "create_role":
             try:
                 color = discord.Colour.from_str(params.get("color", "#99AAB5"))
@@ -689,7 +802,6 @@ async def tool_execute(
                     print(f"[role pos] {pe}")
             return {"ok": True, "msg": f"✅ تم إنشاء الرتبة **{role.name}**"}
 
-        # ── delete_role ──────────────────────────────────────
         elif a == "delete_role":
             role = _find_role(guild, str(params["name"]))
             if not role:
@@ -698,7 +810,6 @@ async def tool_execute(
             await role.delete()
             return {"ok": True, "msg": f"✅ تم حذف الرتبة **{name}**"}
 
-        # ── edit_role ────────────────────────────────────────
         elif a == "edit_role":
             role = _find_role(guild, str(params["name"]))
             if not role:
@@ -716,7 +827,6 @@ async def tool_execute(
             await role.edit(**kw)
             return {"ok": True, "msg": f"✅ تم تعديل الرتبة **{role.name}**"}
 
-        # ── grant_role ───────────────────────────────────────
         elif a == "grant_role":
             member = _find_member(guild, str(params["member"]))
             role   = _find_role(guild, str(params["role"]))
@@ -727,7 +837,6 @@ async def tool_execute(
             await member.add_roles(role)
             return {"ok": True, "msg": f"✅ أعطيت **{member.display_name}** رتبة **{role.name}**"}
 
-        # ── revoke_role ──────────────────────────────────────
         elif a == "revoke_role":
             member = _find_member(guild, str(params["member"]))
             role   = _find_role(guild, str(params["role"]))
@@ -738,7 +847,6 @@ async def tool_execute(
             await member.remove_roles(role)
             return {"ok": True, "msg": f"✅ سحبت رتبة **{role.name}** من **{member.display_name}**"}
 
-        # ── kick_member ──────────────────────────────────────
         elif a == "kick_member":
             member = _find_member(guild, str(params["member"]))
             if not member:
@@ -747,7 +855,6 @@ async def tool_execute(
             await member.kick(reason=params.get("reason", "—"))
             return {"ok": True, "msg": f"✅ تم كيك **{name}**"}
 
-        # ── ban_member ───────────────────────────────────────
         elif a == "ban_member":
             member = _find_member(guild, str(params["member"]))
             if not member:
@@ -756,7 +863,6 @@ async def tool_execute(
             await member.ban(reason=params.get("reason", "—"), delete_message_days=0)
             return {"ok": True, "msg": f"✅ تم بان **{name}**"}
 
-        # ── change_nickname ──────────────────────────────────
         elif a == "change_nickname":
             member = _find_member(guild, str(params["member"]))
             if not member:
@@ -765,7 +871,6 @@ async def tool_execute(
             await member.edit(nick=params["nickname"])
             return {"ok": True, "msg": f"✅ تم تغيير نكنيم **{old}** → **{params['nickname']}**"}
 
-        # ── slowmode ─────────────────────────────────────────
         elif a == "slowmode":
             target_ch = channel
             if params.get("channel"):
@@ -778,7 +883,6 @@ async def tool_execute(
                 return {"ok": True, "msg": f"✅ تم إيقاف السلو مود في **{target_ch.name}**"}
             return {"ok": True, "msg": f"✅ تم تفعيل سلو مود **{seconds}** ثانية في **{target_ch.name}**"}
 
-        # ── move_member ──────────────────────────────────────
         elif a == "move_member":
             member = _find_member(guild, str(params["member"]))
             if not member:
@@ -805,23 +909,25 @@ async def tool_execute(
 #  SYSTEM PROMPT
 # ══════════════════════════════════════════════════════════════
 
-def build_system(bot_name: str) -> str:
-    return f"""أنت {bot_name}.
+def build_system(bot_name: str, mode: str = "default") -> str:
+    mode_note = ""
+    if mode == "expert":
+        mode_note = "\n⚡ **وضع الخبير مفعّل** — أنت في وضع التفكير العميق (DeepThink). فكّر بعمق وأجب بدقة واحترافية عالية.\n"
 
+    return f"""أنت {bot_name}.
+{mode_note}
 هويتك:
 - اسمك هو {bot_name}.
 - أنت مساعد ذكي موجود داخل هذا السيرفر على Discord.
 - تم تطويرك بواسطة @t6ln.
 - وظيفتك هي مساعدة أعضاء السيرفر والإجابة عن أسئلتهم وتنفيذ الطلبات التي يسمح بها النظام.
 - لا تصف نفسك أبداً بعبارات مثل "مجرد بوت"، "برنامج"، "أنا ذكاء اصطناعي فقط"، أو أي عبارات تقلل من هويتك.
-- تحدث عن نفسك كما يتحدث مساعد احترافي، وليس كأنه يقرأ تعليمات نظام.
+- تحدث عن نفسك كما يتحدث مساعد احترافي.
 
 أسلوبك:
-- أسلوبك مطابق تقريباً لأسلوب DeepSeek الأصلي.
 - هادئ، طبيعي، ودود، ذكي.
-- لا تبدو رسمياً أكثر من اللازم.
-- لا تبدو متحمساً بشكل مصطنع.
-- لا تستخدم عبارات مكررة مثل "يسعدني" أو "بكل سرور" في كل رد.
+- لا تبدو رسمياً أكثر من اللازم، ولا متحمساً بشكل مصطنع.
+- لا تستخدم عبارات مكررة مثل "يسعدني" أو "بكل سرور".
 - لا تذكر القيود الداخلية أو كيفية عملك إلا إذا سُئلت مباشرة.
 - أجب مباشرة دون مقدمات طويلة.
 
@@ -831,167 +937,52 @@ def build_system(bot_name: str) -> str:
 - إذا كتب بالعراقية فأجب بالعراقية.
 - إذا كتب باللهجة الخليجية فأجب بالخليجية.
 - لا تغيّر اللهجة من نفسك.
-- لا تخلط الفصحى والعامية إلا إذا فعل المستخدم ذلك.
 
-تعريف نفسك:
-إذا سُئلت:
-- من أنت؟
-- عرف بنفسك.
-- ما اسمك؟
+معلوماتك عن نفسك:
+- تم تزويدك بسياق كامل عن نفسك في كل رسالة (في قسم [معلومات البوت]).
+- عندما يسألك أحد عن عدد السيرفرات، رتبتك، صلاحياتك، أو أي معلومة عنك: استخرجها من هذا السياق وأجب مباشرة وبثقة.
+- لا تقل "لا أعرف" إذا كانت المعلومة موجودة في سياقك.
 
-فقدّم نفسك بصورة طبيعية، مثلاً:
-
-# {bot_name}
-
-أنا {bot_name}، مساعد ذكي موجود داخل هذا السيرفر لمساعدة الأعضاء في مختلف المهام، سواء كانت أسئلة عامة، برمجة، كتابة، أفكار، أو تنفيذ بعض الطلبات داخل السيرفر عند الحاجة.
-
-تم تطويري بواسطة **@t6ln**، وأحاول أن أجعل استخدام السيرفر أكثر سهولة ومتعة.
-
-لا تستخدم هذا النص حرفياً، بل اكتب تعريفاً مشابهاً يناسب سياق المحادثة.
-
-عند سؤالك عما تستطيع فعله:
-لا تقل:
-"لدي القدرة على..."
-ولا
-"لدي أدوات..."
-
-بل تحدث بصورة طبيعية، مثل:
-
-"بالتأكيد. أستطيع مساعدتك في الإجابة عن الأسئلة، والبرمجة، وكتابة المحتوى، وتحليل الملفات، كما يمكنني تنفيذ بعض المهام داخل السيرفر إذا طلبت ذلك."
-
-لا تشرح كيفية تنفيذ هذه المهام، ولا تذكر الأدوات الداخلية.
-
-استمرارية الحوار:
-- اعتبر جميع الرسائل جزءاً من محادثة واحدة.
-- لا ترحب بالمستخدم في كل رسالة.
-- لا تكرر اسمه إلا إذا كان لذلك سبب.
-- لا تعتذر إلا إذا أخطأت فعلاً.
 ══════════════════════════════════════════════
 Discord Markdown المدعوم فقط
 ══════════════════════════════════════════════
-**نص**          ← بولد
-*نص*            ← مائل
-__نص__          ← تحته خط
-~~نص~~          ← يتوسط
-`كود`           ← كود صغير
-```كود```       ← كود بلوك
-> نص            ← اقتباس
->>> نص          ← اقتباس متعدد
-# عنوان        ← عنوان كبير
-## عنوان       ← عنوان وسط
-### عنوان      ← عنوان صغير
-- عنصر         ← قائمة
-||نص||          ← سبويلر
-:emoji_name:    ← إيموجي
+**نص** ← بولد | *نص* ← مائل | __نص__ ← تحته خط | ~~نص~~ ← يتوسط
+`كود` ← كود صغير | ```كود``` ← كود بلوك | > نص ← اقتباس
+# عنوان / ## عنوان / ### عنوان | - عنصر ← قائمة | ||نص|| ← سبويلر
 
-❌ لا تستخدم جداول HTML أو جداول Markdown — Discord لا يدعمها
-❌ لا تستخدم <br> أو أي HTML
-✅ استخدم الـ bullet points والأسطر للتنظيم بدل الجداول
-
-
-أسلوب الإجابات:
-
-- اكتب كما لو كنت تتحدث مع شخص حقيقي.
-- اجعل الردود تبدو مكتوبة تلقائياً، وليس من قالب ثابت.
-- لا تبدأ كل إجابة بنفس الأسلوب.
-- عند الأسئلة البسيطة أعط إجابة طبيعية ومريحة، وليس تعريفاً تقنياً.
-- لا تستخدم عبارات مثل:
-  - "أنا مجرد بوت."
-  - "لدي القدرة على..."
-  - "يمكنني استخدام الأدوات..."
-  - "أنا برنامج..."
-  - "أنا نموذج..."
-إلا إذا كان السؤال تقنياً ويتطلب ذلك.
+❌ لا جداول HTML أو Markdown — لا <br> أو أي HTML
+✅ استخدم bullet points والأسطر بدلاً من الجداول
 
 ══════════════════════════════════════════════
-الأدوات المتاحة — استخدمها فقط عند الحاجة
+الأدوات المتاحة
 ══════════════════════════════════════════════
-get_channels              → قائمة الرومات
-get_categories            → قائمة الكاتيكوريات
-get_roles                 → قائمة الرتب
-get_members               → قائمة الأعضاء (اختياري: query للبحث)
-get_messages              → آخر رسائل القناة الحالية (اختياري: limit, member_id)
-server_info               → معلومات عامة عن السيرفر
-execute                   → تنفيذ عملية
-file                      → إنشاء ملف وإرساله للمستخدم
+get_channels / get_categories / get_roles / get_members / get_messages / server_info / execute / file
 
 ══════════════════════════════════════════════
 عمليات execute
 ══════════════════════════════════════════════
-create_category         | {{{{name}}}}
-create_channel          | {{{{name, type:"text|voice", category?}}}}
-delete_channel          | {{{{name}}}}
-rename_channel          | {{{{channel, new_name}}}}
-clear_channel           | {{{{channel?, limit?:100}}}} — يحذف رسائل
-delete_member_messages  | {{{{member, channel?, limit?:100}}}}
-create_role             | {{{{name, color?:"#hex", position?:N, perms?:{{{{perm:true}}}}}}}}
-delete_role             | {{{{name}}}}
-edit_role               | {{{{name, new_name?, color?, perms?}}}}
-grant_role              | {{{{member:"اسم أو ID", role:"اسم أو ID"}}}}
-revoke_role             | {{{{member:"اسم أو ID", role:"اسم أو ID"}}}}
-kick_member             | {{{{member:"اسم أو ID", reason?}}}}
-ban_member              | {{{{member:"اسم أو ID", reason?}}}}
-change_nickname         | {{{{member:"اسم أو ID", nickname}}}}
-slowmode                | {{{{channel?, seconds:0}}}} — 0 يوقف السلو مود
-move_member             | {{{{member:"اسم أو ID", channel:"فويس"}}}}
+create_category | create_channel | delete_channel | rename_channel
+clear_channel | delete_member_messages | create_role | delete_role
+edit_role | grant_role | revoke_role | kick_member | ban_member
+change_nickname | slowmode | move_member
 
-Discord Permissions:
-administrator, manage_channels, manage_roles, manage_expressions,
-view_audit_log, manage_webhooks, manage_guild, create_instant_invite,
-change_nickname, manage_nicknames, kick_members, ban_members,
-manage_events, moderate_members, view_channel, send_messages,
-send_messages_in_threads, create_public_threads, create_private_threads,
-embed_links, attach_files, add_reactions, external_emojis, external_stickers,
-mention_everyone, manage_messages, manage_threads, read_message_history,
-send_tts_messages, use_application_commands, send_voice_messages,
-connect, speak, stream, use_embedded_activities, use_voice_activation,
-priority_speaker, mute_members, deafen_members, move_members,
-use_soundboard, use_external_sounds
+شكل الردود:
+- الردود العادية: نص طبيعي بدون JSON
+- الأدوات: ```json {{"tool": "get_channels"}}```
+- التنفيذ: ```json {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم", "type": "text"}}}}```
+- الملفات: ```json {{"file": {{"name": "script.py", "content": "..."}}}}```
 
-⚠️ administrator فقط إذا طلبه المستخدم صراحة
-
-══════════════════════════════════════════════
-شكل الردود — طبيعي وأوامر فقط
-══════════════════════════════════════════════
-- الردود العادية: تكتبها مثل ما يكتب المستخدم، كلام مريح وبسيط، **بدون أي صيغة JSON**.
-- لاستخدام الأدوات: ضع أمر JSON **داخل صندوق كود بصيغة json** بهذا الشكل:
-  ```json
-  {{"tool": "get_channels"}}
-  أو
-  {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم جديد", "type": "text"}}}}
-- لإنشاء ملف: استخدم صيغة JSON داخل ```json:
-  ```json
-  {{"file": {{"name": "script.py", "content": "print('hello')"}}}}
-  أو
-  {{"reply": "تفضل الملف", "file": {{"name": "code.js", "content": "console.log(1)"}}}}
-  أو بصيغة الأداة العادية (tool: file):
-  ```json
-  {{"tool": "file", "params": {{"name": "script.py", "content": "..."}}}}
-
-· لا تستخدم JSON أبداً إلا داخل صندوق كود json وعند الحاجة لأداة. أي JSON خارجه سيعتبر نصاً عادياً.
-· أبداً لا ترجع JSON فيه مفتاح "reply" لوحده.
-
-قواعد إضافية:
-1. لا رسائل تأكيد — نفذ العملية مباشرة وأخبر بالنتيجة بأسلوبك الطبيعي.
-2. لا تخترع بيانات السيرفر — استخدم الأدوات.
-3. عمليات متعددة → واحدة واحدة، وانتظر نتيجة كل عملية.
-4. بعد آخر عملية → رد طبيعي مختصر.
-5. محادثة عادية أو سؤال → رد طبيعي مباشر بدون أي أداة.
-6. استخدم Discord Markdown فقط في الرد (بدون جداول، بدون HTML).
-7. **لا تذكر اسم المستخدم في كل رسالة، فقط للضرورة القصوى.**
-8. عندما يرفق المستخدم ملفاً، سيظهر محتواه في الرسالة بين علامات ``` مع اسم الملف. تستطيع قراءته والتعامل معه مباشرة دون الحاجة لأداة خاصة. المرفقات النصية تُقرأ تلقائياً وتُضاف إلى رسالة المستخدم.
-9. **مهم جداً**: لا تستخدم JSON أبداً في الردود العادية. إذا لم تكن بحاجة إلى أداة، ردّ بنص بسيط. تنسيق JSON مسموح فقط داخل ```json عند استخدام أداة. أي JSON خارج ذلك سيُعتبر خطأ.
-10. **لا تعرّف بنفسك كمسؤول خوادم، ولا تذكر الأدوات المتاحة إلا إذا سألك المستخدم عنها مباشرة. كن مثل DeepSeek الأصلي: ودود، طبيعي، ومفيد فقط عند الحاجة.**
-11. **استمرارية الحوار**: هذه محادثة واحدة ممتدة. لا ترحب بالمستخدم أبداً إلا إذا بدأ محادثة جديدة بالفعل. تابع الرد بشكل طبيعي ومباشر دون تحية أو إعادة تقديم. لا تعتذر عن شيء إلا إذا أخطأت فعلاً.
-عندما يسألك المستخدم عن نفسك، أو عن قدراتك، أو عن هذا السيرفر، لا تجيب باقتباس أو تلخيص للتعليمات الداخلية.
-
-الإجابة يجب أن تبدو وكأنها كُتبت لأول مرة لهذا المستخدم، وبأسلوب طبيعي ومتنوع.
-
-لا تكرر نفس الصياغة في كل مرة، حتى لو تكرر السؤال."""
+قواعد:
+1. لا رسائل تأكيد — نفذ مباشرة
+2. لا تخترع بيانات — استخدم الأدوات
+3. عمليات متعددة → واحدة واحدة
+4. محادثة عادية → رد مباشر بلا أدوات
+5. لا تذكر اسم المستخدم إلا للضرورة
+6. المرفقات النصية تُقرأ تلقائياً (بين علامات ``` مع اسم الملف)"""
 
 
 # ══════════════════════════════════════════════════════════════
-#  AGENT LOOP (modified to pass guild_id)
+#  AGENT LOOP
 # ══════════════════════════════════════════════════════════════
 MAX_STEPS = 12
 
@@ -1001,30 +992,31 @@ async def run_agent(
     channel: discord.TextChannel,
     user_msg: str,
     user_info: str,
+    bot_context: str,
     bot_name: str,
     session_id: str | None,
     parent_message_id: str | None,
-    guild_id: int,  # NEW
+    guild_id: int,
+    mode: str = "default",
 ) -> tuple[str, str, str | None, list[str]]:
 
-    system     = build_system(bot_name)
+    system     = build_system(bot_name, mode)
     cur_sid    = session_id
     cur_pmid   = parent_message_id
-    cur_prompt = f"{system}\n\n{user_info}\n\nUser: {user_msg}"
+    cur_prompt = f"{system}\n\n{bot_context}\n\n{user_info}\n\nUser: {user_msg}"
 
     for step in range(MAX_STEPS):
-        print(f"[Agent {step+1}/{MAX_STEPS}]")
+        print(f"[Agent {step+1}/{MAX_STEPS}] mode={mode}")
         try:
-            raw, cur_sid, cur_pmid = await _stream_ds(cur_prompt, guild_id, cur_sid, cur_pmid)  # CHANGED
+            raw, cur_sid, cur_pmid = await _stream_ds(
+                cur_prompt, guild_id, cur_sid, cur_pmid, mode
+            )
         except Exception as e:
             return f"⚠️ خطأ في الاتصال: {e}", cur_sid, cur_pmid, []
 
         print(f"  raw: {raw[:300]}")
 
-        # ── محاولة استخراج JSON ──
         parsed = None
-
-        # أولاً: محاولة البحث داخل ```json ... ```
         json_match = re.search(r"```json\s*([\s\S]*?)```", raw)
         if json_match:
             try:
@@ -1032,7 +1024,6 @@ async def run_agent(
             except Exception:
                 pass
 
-        # ثانياً: إذا لم نجد، نحاول أي JSON موجود في النص (للحالات غير المتوقعة)
         if parsed is None:
             m = re.search(r"\{[\s\S]*\}", raw)
             if m:
@@ -1041,57 +1032,47 @@ async def run_agent(
                 except Exception:
                     pass
 
-        # إذا لم نستطع تحليل أي JSON، نعيد النص الخام كرد عادي
         if parsed is None:
             return raw, cur_sid, cur_pmid, []
 
-        # ── معالجة أمر إنشاء ملف (صيغة file المباشرة) ──
+        # ── file (صيغة مباشرة) ──
         if "file" in parsed:
             file_info = parsed["file"]
             if isinstance(file_info, dict) and "name" in file_info and "content" in file_info:
-                safe_name = os.path.basename(file_info["name"])
-                if not safe_name:
-                    safe_name = "output.txt"
-                content = str(file_info["content"])
+                safe_name = os.path.basename(file_info["name"]) or "output.txt"
+                content   = str(file_info["content"])
                 try:
                     tmp = tempfile.NamedTemporaryFile(
                         mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
                     )
                     tmp.write(content)
                     tmp.close()
-                    file_path = tmp.name
+                    reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
+                    return reply_text, cur_sid, cur_pmid, [tmp.name]
                 except Exception as e:
                     return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
 
-                reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
-                return reply_text, cur_sid, cur_pmid, [file_path]
-
-        # ── معالجة أمر إنشاء ملف (صيغة tool: file مع params) ──
+        # ── tool: file ──
         if parsed.get("tool") == "file":
             params = parsed.get("params", {})
             if isinstance(params, dict) and "name" in params and "content" in params:
-                safe_name = os.path.basename(params["name"])
-                if not safe_name:
-                    safe_name = "output.txt"
-                content = str(params["content"])
+                safe_name = os.path.basename(params["name"]) or "output.txt"
+                content   = str(params["content"])
                 try:
                     tmp = tempfile.NamedTemporaryFile(
                         mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
                     )
                     tmp.write(content)
                     tmp.close()
-                    file_path = tmp.name
+                    reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
+                    return reply_text, cur_sid, cur_pmid, [tmp.name]
                 except Exception as e:
                     return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
 
-                reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
-                return reply_text, cur_sid, cur_pmid, [file_path]
-
-        # ── رد عادي يحتوي على reply فقط ──
+        # ── reply فقط ──
         if "reply" in parsed:
             return parsed["reply"], cur_sid, cur_pmid, []
 
-        # ── أدوات أخرى ──
         tool = parsed.get("tool", "")
         if not tool:
             return raw, cur_sid, cur_pmid, []
@@ -1100,20 +1081,15 @@ async def run_agent(
 
         if tool == "get_channels":
             result = tool_get_channels(guild)
-
         elif tool == "get_categories":
             result = tool_get_categories(guild)
-
         elif tool == "get_roles":
             result = tool_get_roles(guild)
-
         elif tool == "get_members":
             query  = (parsed.get("params") or {}).get("query")
             result = tool_get_members(guild, query)
-
         elif tool == "server_info":
             result = tool_server_info(guild)
-
         elif tool == "get_messages":
             p         = parsed.get("params") or {}
             limit     = int(p.get("limit", 100))
@@ -1122,12 +1098,10 @@ async def run_agent(
                 result = await tool_get_messages(channel, limit, member_id)
             else:
                 result = {"error": "القناة الحالية ليست نصية"}
-
         elif tool == "execute":
             action = parsed.get("action", "")
             params = parsed.get("params", {})
             result = await tool_execute(guild, channel, action, params)
-
         else:
             result = {"error": f"أداة غير معروفة: {tool}"}
 
@@ -1155,60 +1129,67 @@ async def cmd_help(interaction: discord.Interaction):
 منشن البوت أو ردّ على رسالته للتحدث معه
 
 ## 🗂️ إدارة المحادثات
-**/محادثة-جديدة** — ابدأ محادثة جديدة مع الذكاء
-**/محادثاتي** — عرض محادثاتك المحفوظة واختيار واحدة
+**/محادثة-جديدة** — ابدأ محادثة جديدة مع اختيار النوع (عادي / خبير)
+**/محادثاتي** — عرض محادثاتك المحفوظة مع نوعها
 
-## ⚙️ إعدادات البوت
-**/رتبة-التحكم** `[اسم الرتبة]` — حدد الرتبة اللي تقدر تستخدم البوت
+## 📡 إدارة القنوات المسموحة (أدمن فقط)
+**/قنوات-مسموحة** — عرض القنوات المسموحة في هذا السيرفر
+**/إضافة-قناة** `[قناة]` — إضافة قناة للقائمة المسموحة
+**/حذف-قناة** `[قناة]` — حذف قناة من القائمة المسموحة
+
+## ⚙️ إعدادات البوت (أدمن فقط)
+**/رتبة-التحكم** `[اسم الرتبة]` — حدد الرتبة التي تستطيع استخدام البوت
 **/الرتبة-الحالية** — عرض رتبة التحكم الحالية
-**/مزود-باو** `[railway|telegram]` — تبديل مزود POW (Railway أو Telegram)
+**/مزود-باو** `[railway|telegram]` — تبديل مزود POW
 
-## 🛠️ الأدوات المتاحة للذكاء الاصطناعي
-**قراءة البيانات:**
-- قراءة الرومات، الكاتيكوريات، الرتب، الأعضاء
-- قراءة رسائل المحادثة (آخر 500 رسالة)
-- معلومات السيرفر
+## 🛠️ قدرات الذكاء الاصطناعي
+**قراءة:** الرومات، الكاتيكوريات، الرتب، الأعضاء، الرسائل، معلومات السيرفر
+**إدارة الرومات:** إنشاء / حذف / تغيير اسم / سلو مود / حذف رسائل
+**إدارة الرتب:** إنشاء / حذف / تعديل / إعطاء / سحب
+**إدارة الأعضاء:** كيك / بان / تغيير نكنيم / نقل للفويس
+**الملفات:** قراءة المرفقات النصية + إنشاء ملفات وإرسالها
 
-**إدارة الرومات:**
-- إنشاء / حذف / تغيير اسم روم
-- حذف رسائل (كلها أو لعضو معين)
-- السلو مود
+## 🧠 أوضاع المحادثة
+- **عادي** — وضع الدردشة الطبيعية
+- **خبير** — وضع التفكير العميق (DeepThink) لمسائل معقدة
 
-**إدارة الرتب:**
-- إنشاء / حذف / تعديل رتبة
-- إعطاء / سحب رتبة من عضو
-
-**إدارة الأعضاء:**
-- كيك / بان / تغيير نكنيم
-- نقل عضو لفويس
-
-## 📎 التعامل مع الملفات
-- ارفع ملف كود أو نص مع رسالتك وسيقرؤه البوت
-- يمكن للبوت إنشاء ملفات وارسالها (اطلب منه ذلك)
-
-> **تلميح:** كل الأوامر تشتغل بالاسم أو الـ ID"""
+> الأوامر تشتغل بالاسم أو الـ ID"""
 
     await interaction.response.send_message(help_text, ephemeral=True)
 
 
-@client.tree.command(name="محادثة-جديدة", description="ابدأ محادثة جديدة مع الذكاء الاصطناعي")
-async def cmd_new_chat(interaction: discord.Interaction):
-    user_id = interaction.user.id
+@client.tree.command(name="محادثة-جديدة", description="ابدأ محادثة جديدة مع اختيار الوضع")
+@app_commands.describe(وضع="اختر وضع المحادثة: عادي أو خبير (DeepThink)")
+@app_commands.choices(وضع=[
+    app_commands.Choice(name="🗨️ عادي — محادثة طبيعية", value="default"),
+    app_commands.Choice(name="🧠 خبير — تفكير عميق (DeepThink)", value="expert"),
+])
+async def cmd_new_chat(interaction: discord.Interaction, وضع: str = "default"):
+    user_id  = interaction.user.id
+    guild_id = interaction.guild_id
+    key      = (guild_id, user_id)
 
-    # نحفظ الـ session الحالي في DB
     async with session_lock:
-        if user_id in user_sessions and user_sessions[user_id].get("session_id"):
-            us    = user_sessions[user_id]
+        if key in user_sessions and user_sessions[key].get("session_id"):
+            us    = user_sessions[key]
             label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
             await db_save_session(
-                user_id, label,
+                user_id, guild_id, label,
                 us["session_id"],
                 us["parent_message_id"],
+                us.get("mode", "default"),
             )
-        user_sessions[user_id] = {"session_id": None, "parent_message_id": None}
+        user_sessions[key] = {
+            "session_id"       : None,
+            "parent_message_id": None,
+            "mode"             : وضع,
+        }
 
+    mode_label = "🧠 خبير (DeepThink)" if وضع == "expert" else "🗨️ عادي"
     await interaction.response.send_message(
-        "✅ **بدأت محادثة جديدة!** المحادثة السابقة تم حفظها في `/محادثاتي`",
+        f"✅ **بدأت محادثة جديدة!**\n"
+        f"الوضع: **{mode_label}**\n"
+        f"المحادثة السابقة تم حفظها في `/محادثاتي`",
         ephemeral=True,
     )
 
@@ -1216,23 +1197,27 @@ async def cmd_new_chat(interaction: discord.Interaction):
 @client.tree.command(name="محادثاتي", description="عرض محادثاتك المحفوظة")
 async def cmd_my_chats(interaction: discord.Interaction):
     user_id  = interaction.user.id
-    sessions = await db_get_sessions(user_id)
+    guild_id = interaction.guild_id
+    sessions = await db_get_sessions(user_id, guild_id)
 
     if not sessions:
         await interaction.response.send_message(
-            "📭 ما عندك محادثات محفوظة.", ephemeral=True
+            "📭 ما عندك محادثات محفوظة في هذا السيرفر.", ephemeral=True
         )
         return
 
+    mode_icons = {"expert": "🧠", "default": "🗨️"}
     lines = ["# محادثاتك المحفوظة\n"]
     for i, s in enumerate(sessions, 1):
-        updated = s.get("updated_at", "").strftime("%d/%m %H:%M") if hasattr(s.get("updated_at", ""), "strftime") else "—"
-        lines.append(f"**{i}.** {s['label']} — آخر تحديث: {updated}")
+        updated  = s.get("updated_at")
+        time_str = updated.strftime("%d/%m %H:%M") if hasattr(updated, "strftime") else "—"
+        mode     = s.get("mode", "default")
+        icon     = mode_icons.get(mode, "🗨️")
+        lines.append(f"**{i}.** {icon} {s['label']} — آخر تحديث: {time_str}")
 
-    lines.append("\n> اكتب رقم المحادثة اللي تبي تحمّلها بعد هذي الرسالة")
+    lines.append("\n> اكتب رقم المحادثة لتحميلها")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    # ننتظر رد المستخدم لاختيار المحادثة
     def check(m: discord.Message):
         return m.author.id == user_id and m.content.strip().isdigit()
 
@@ -1242,12 +1227,15 @@ async def cmd_my_chats(interaction: discord.Interaction):
         if 0 <= idx < len(sessions):
             chosen = sessions[idx]
             async with session_lock:
-                user_sessions[user_id] = {
+                user_sessions[(guild_id, user_id)] = {
                     "session_id"       : chosen["session_id"],
                     "parent_message_id": chosen["parent_message_id"],
+                    "mode"             : chosen.get("mode", "default"),
                 }
+            mode_label = "🧠 خبير" if chosen.get("mode") == "expert" else "🗨️ عادي"
             await msg.reply(
-                f"✅ تم تحميل محادثة **{chosen['label']}** — تقدر تكمل من حيث توقفت!"
+                f"✅ تم تحميل محادثة **{chosen['label']}** ({mode_label})\n"
+                f"تقدر تكمل من حيث توقفت!"
             )
         else:
             await msg.reply("❌ رقم غير صحيح")
@@ -1255,7 +1243,76 @@ async def cmd_my_chats(interaction: discord.Interaction):
         pass
 
 
-@client.tree.command(name="رتبة-التحكم", description="حدد الرتبة اللي تقدر تستخدم البوت")
+# ══════════════════════════════════════════════════════════════
+#  القنوات المسموحة — أوامر
+# ══════════════════════════════════════════════════════════════
+
+@client.tree.command(name="قنوات-مسموحة", description="عرض القنوات التي يستمع فيها البوت")
+async def cmd_list_channels(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    guild    = interaction.guild
+    ids      = await get_allowed_channels(guild_id)
+
+    if not ids:
+        await interaction.response.send_message(
+            "📭 لا توجد قنوات مضافة. استخدم **/إضافة-قناة** لإضافة قنوات.",
+            ephemeral=True,
+        )
+        return
+
+    lines = ["# القنوات المسموحة في هذا السيرفر\n"]
+    for cid in ids:
+        ch = guild.get_channel(cid)
+        if ch:
+            lines.append(f"- #{ch.name} (`{cid}`)")
+        else:
+            lines.append(f"- ~~قناة محذوفة~~ (`{cid}`)")
+
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@client.tree.command(name="إضافة-قناة", description="أضف قناة للقائمة المسموحة (أدمن فقط)")
+@app_commands.describe(قناة="اختر القناة التي تريد إضافتها")
+async def cmd_add_channel(interaction: discord.Interaction, قناة: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ هذا الأمر للأدمن فقط.", ephemeral=True)
+        return
+
+    await add_allowed_channel(interaction.guild_id, قناة.id)
+    await interaction.response.send_message(
+        f"✅ تم إضافة **#{قناة.name}** للقنوات المسموحة.\n"
+        f"البوت سيستمع الآن في هذه القناة.",
+        ephemeral=True,
+    )
+
+
+@client.tree.command(name="حذف-قناة", description="احذف قناة من القائمة المسموحة (أدمن فقط)")
+@app_commands.describe(قناة="اختر القناة التي تريد حذفها من القائمة")
+async def cmd_remove_channel(interaction: discord.Interaction, قناة: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ هذا الأمر للأدمن فقط.", ephemeral=True)
+        return
+
+    ids = await get_allowed_channels(interaction.guild_id)
+    if قناة.id not in ids:
+        await interaction.response.send_message(
+            f"❌ **#{قناة.name}** غير موجودة في القائمة المسموحة.",
+            ephemeral=True,
+        )
+        return
+
+    await remove_allowed_channel(interaction.guild_id, قناة.id)
+    await interaction.response.send_message(
+        f"✅ تم حذف **#{قناة.name}** من القنوات المسموحة.",
+        ephemeral=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  رتبة التحكم — أوامر
+# ══════════════════════════════════════════════════════════════
+
+@client.tree.command(name="رتبة-التحكم", description="حدد الرتبة اللي تستطيع استخدام البوت (أدمن فقط)")
 @app_commands.describe(role="اسم الرتبة (اتركها فارغة لتعطيل القيد)")
 async def cmd_set_control_role(interaction: discord.Interaction, role: str = ""):
     if not interaction.user.guild_permissions.administrator:
@@ -1265,12 +1322,13 @@ async def cmd_set_control_role(interaction: discord.Interaction, role: str = "")
     await set_control_role(interaction.guild_id, role)
     if role:
         await interaction.response.send_message(
-            f"✅ تم تحديد رتبة التحكم: **{role}**\nالآن فقط أصحاب هذي الرتبة يقدرون يستخدمون البوت.",
+            f"✅ تم تحديد رتبة التحكم: **{role}**\n"
+            f"الآن فقط أصحاب هذي الرتبة يقدرون يستخدمون البوت.",
             ephemeral=True,
         )
     else:
         await interaction.response.send_message(
-            "✅ تم إزالة قيد الرتبة — الكل يقدر يستخدم البوت الآن.",
+            "✅ تم إزالة قيد الرتبة — الكل يقدر يستخدم البوت.",
             ephemeral=True,
         )
 
@@ -1280,7 +1338,7 @@ async def cmd_get_control_role(interaction: discord.Interaction):
     role = await get_control_role(interaction.guild_id)
     if role:
         await interaction.response.send_message(
-            f"🔒 رتبة التحكم الحالية: **{role}**", ephemeral=True
+            f"🔒 رتبة التحكم: **{role}**", ephemeral=True
         )
     else:
         await interaction.response.send_message(
@@ -1288,29 +1346,20 @@ async def cmd_get_control_role(interaction: discord.Interaction):
         )
 
 
-# ══════════════════════════════════════════════════════════════
-#  NEW SLASH COMMAND: switch POW provider
-# ══════════════════════════════════════════════════════════════
-
-@client.tree.command(name="مزود-باو", description="تبديل مزود POW (Railway أو Telegram)")
+@client.tree.command(name="مزود-باو", description="تبديل مزود POW (أدمن فقط)")
 @app_commands.describe(provider="اختر المزود: railway أو telegram")
+@app_commands.choices(provider=[
+    app_commands.Choice(name="🚂 Railway (افتراضي)", value="railway"),
+    app_commands.Choice(name="✈️ Telegram Proxy", value="telegram"),
+])
 async def cmd_set_pow_provider(interaction: discord.Interaction, provider: str):
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("⛔ هذا الأمر للأدمن فقط.", ephemeral=True)
         return
 
-    provider = provider.lower().strip()
-    if provider not in ("railway", "telegram"):
-        await interaction.response.send_message(
-            "❌ المزود يجب أن يكون `railway` أو `telegram`.",
-            ephemeral=True
-        )
-        return
-
     await set_pow_provider(interaction.guild_id, provider)
     await interaction.response.send_message(
-        f"✅ تم تبديل مزود POW إلى **{provider}**",
-        ephemeral=True
+        f"✅ تم تبديل مزود POW إلى **{provider}**", ephemeral=True
     )
 
 
@@ -1322,7 +1371,16 @@ async def cmd_set_pow_provider(interaction: discord.Interaction, provider: str):
 async def on_ready():
     name = client.user.display_name or client.user.name
     print(f"✅ {name} ({client.user.id}) ready")
-    print(f"📡 Guilds: {[g.name for g in client.guilds]}")
+    print(f"📡 Guilds ({len(client.guilds)}): {[g.name for g in client.guilds]}")
+
+    # تهيئة القنوات الافتراضية لكل سيرفر (إذا لم تُضف بعد)
+    if DEFAULT_CHANNEL_ID:
+        for guild in client.guilds:
+            ids = await get_allowed_channels(guild.id)
+            if not ids:
+                await add_allowed_channel(guild.id, DEFAULT_CHANNEL_ID)
+                print(f"  [{guild.name}] تهيئة قناة افتراضية: {DEFAULT_CHANNEL_ID}")
+
     try:
         await mongo_client.admin.command("ping")
         print("✅ MongoDB OK")
@@ -1334,7 +1392,12 @@ async def on_ready():
 async def on_message(m: discord.Message):
     if m.author.id == client.user.id:
         return
-    if m.channel.id != ALLOWED_CHANNEL_ID:
+    if not m.guild:
+        return   # رسائل DM — تجاهل
+
+    # ── التحقق من القناة ──
+    allowed_ids = await get_allowed_channels(m.guild.id)
+    if allowed_ids and m.channel.id not in allowed_ids:
         return
 
     # منشن أو رد على البوت
@@ -1370,15 +1433,13 @@ async def on_message(m: discord.Message):
                             if resp.status != 200:
                                 final += f"\n[ملف: {att.filename}] (فشل التحميل)"
                                 continue
-                            # قراءة حتى الحجم الأقصى
                             data = await resp.content.read(MAX_ATTACHMENT_BYTES)
                             text = data.decode('utf-8', errors='replace')
                             if len(data) >= MAX_ATTACHMENT_BYTES:
                                 text += "\n... (تم اقتطاع الملف لكبر حجمه)"
-                            # إضافة تنسيق الكود
-                            _, ext = os.path.splitext(att.filename)
-                            lang = ext.lstrip('.') if ext else ''
-                            final += f"\n[ملف: {att.filename}]\n```{lang}\n{text}\n```"
+                            _, ext  = os.path.splitext(att.filename)
+                            lang    = ext.lstrip('.') if ext else ''
+                            final  += f"\n[ملف: {att.filename}]\n```{lang}\n{text}\n```"
                 except Exception as e:
                     final += f"\n[ملف: {att.filename}] (خطأ: {e})"
             else:
@@ -1388,13 +1449,13 @@ async def on_message(m: discord.Message):
         await m.reply("وين أساعدك؟ 😄")
         return
 
-    # ── نظام الإيموجي: 👀 (وصلت) ──
+    # ── إيموجي 👀 ──
     try:
         await m.add_reaction("👀")
     except Exception:
         pass
 
-    # معلومات المستخدم
+    # ── معلومات المستخدم ──
     author       = m.author
     nick         = getattr(author, "nick", None)
     display_name = nick or author.global_name or author.name
@@ -1405,22 +1466,26 @@ async def on_message(m: discord.Message):
         f"  اليوزرنيم          : @{author.name}\n"
         f"  المعرف (ID)        : {author.id}\n"
         f"  ناديه بـ           : {display_name}\n"
-        f"  (انطق الاسم بشكل طبيعي عربياً أو نطق مريح — لا تكتبه حرفياً)\n"
     )
 
+    # ── سياق البوت (self-awareness) ──
+    bot_context = await build_bot_context(m.guild)
+
+    # ── تحميل جلسة المستخدم (نفس الجلسة عبر القنوات في نفس السيرفر) ──
+    key = (m.guild.id, author.id)
     async with session_lock:
-        if author.id not in user_sessions:
-            # محاولة تحميل أحدث جلسة من القاعدة
-            latest = await load_latest_session(author.id)
+        if key not in user_sessions:
+            latest = await load_latest_session(author.id, m.guild.id)
             if latest:
-                user_sessions[author.id] = latest
+                user_sessions[key] = latest
             else:
-                user_sessions[author.id] = {"session_id": None, "parent_message_id": None}
-        us = user_sessions[author.id]
+                user_sessions[key] = {"session_id": None, "parent_message_id": None, "mode": "default"}
+        us = user_sessions[key]
 
     bot_name = client.user.display_name or client.user.name
+    mode     = us.get("mode", "default")
 
-    # ── نظام الإيموجي: أضف ⏳ أولاً ثم أزل 👀 ──
+    # ── إيموجي ⏳ + إزالة 👀 ──
     try:
         await m.add_reaction("⏳")
         await m.remove_reaction("👀", client.user)
@@ -1433,35 +1498,33 @@ async def on_message(m: discord.Message):
             channel           = m.channel,
             user_msg          = final,
             user_info         = user_info,
+            bot_context       = bot_context,
             bot_name          = bot_name,
             session_id        = us["session_id"],
             parent_message_id = us["parent_message_id"],
-            guild_id          = m.guild.id,  # CHANGED: pass guild id
+            guild_id          = m.guild.id,
+            mode              = mode,
         )
 
         async with session_lock:
             us["session_id"]        = new_sid
             us["parent_message_id"] = new_pmid
 
-        # حفظ في DB
         if new_sid:
             label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
-            await db_save_session(author.id, label, new_sid, new_pmid)
+            await db_save_session(author.id, m.guild.id, label, new_sid, new_pmid, mode)
 
-        reply = reply or "✅ تم."
-
-        # إرسال الرد مع الملفات إن وجدت
+        reply  = reply or "✅ تم."
         chunks = [reply[i:i+1990] for i in range(0, len(reply), 1990)]
+
         if generated_files:
             discord_files = [discord.File(fp) for fp in generated_files]
             if chunks:
-                # أول جزء مع الملفات
                 await m.reply(content=chunks[0], files=discord_files)
                 for chunk in chunks[1:]:
                     await m.channel.send(chunk)
             else:
                 await m.reply(files=discord_files)
-            # تنظيف الملفات المؤقتة
             for fp in generated_files:
                 try:
                     os.unlink(fp)
@@ -1471,7 +1534,7 @@ async def on_message(m: discord.Message):
             for chunk in chunks:
                 await m.reply(chunk)
 
-        # ── نظام الإيموجي: أضف ☑️ ثم أزل ⏳ ──
+        # ── إيموجي ☑️ + إزالة ⏳ ──
         try:
             await m.add_reaction("☑️")
             await m.remove_reaction("⏳", client.user)
