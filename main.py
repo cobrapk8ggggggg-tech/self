@@ -196,8 +196,8 @@ async def load_latest_session(user_id: int) -> dict | None:
 # ══════════════════════════════════════════════════════════════
 #  DeepSeek API — Low-level
 # ══════════════════════════════════════════════════════════════
-RAILWAY_URL = "https://web-production-c09dc.up.railway.app"
-POW_URL     = f"{RAILWAY_URL}/pow"
+RAILWAY_SERVER_URL = "http://107.172.78.104:8800";
+POW_API_URL = `${RAILWAY_SERVER_URL}/get_pow`;
 
 
 def _device_id() -> str:
