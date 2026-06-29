@@ -785,27 +785,26 @@ get_members               → قائمة الأعضاء (اختياري: query �
 get_messages              → آخر رسائل القناة الحالية (اختياري: limit, member_id)
 server_info               → معلومات عامة عن السيرفر
 execute                   → تنفيذ عملية
-file                      → إنشاء ملف وإرساله للمستخدم (JSON بالمفتاح "file" يحتوي على "name" و "content")
 
 ══════════════════════════════════════════════
 عمليات execute
 ══════════════════════════════════════════════
-create_category         | {{name}}
-create_channel          | {{name, type:"text|voice", category?}}
-delete_channel          | {{name}}
-rename_channel          | {{channel, new_name}}
-clear_channel           | {{channel?, limit?:100}} — يحذف رسائل
-delete_member_messages  | {{member, channel?, limit?:100}}
-create_role             | {{name, color?:"#hex", position?:N, perms?:{{perm:true}}}}
-delete_role             | {{name}}
-edit_role               | {{name, new_name?, color?, perms?}}
-grant_role              | {{member:"اسم أو ID", role:"اسم أو ID"}}
-revoke_role             | {{member:"اسم أو ID", role:"اسم أو ID"}}
-kick_member             | {{member:"اسم أو ID", reason?}}
-ban_member              | {{member:"اسم أو ID", reason?}}
-change_nickname         | {{member:"اسم أو ID", nickname}}
-slowmode                | {{channel?, seconds:0}} — 0 يوقف السلو مود
-move_member             | {{member:"اسم أو ID", channel:"فويس"}}
+create_category         | {{{{name}}}}
+create_channel          | {{{{name, type:"text|voice", category?}}}}
+delete_channel          | {{{{name}}}}
+rename_channel          | {{{{channel, new_name}}}}
+clear_channel           | {{{{channel?, limit?:100}}}} — يحذف رسائل
+delete_member_messages  | {{{{member, channel?, limit?:100}}}}
+create_role             | {{{{name, color?:"#hex", position?:N, perms?:{{{{perm:true}}}}}}}}
+delete_role             | {{{{name}}}}
+edit_role               | {{{{name, new_name?, color?, perms?}}}}
+grant_role              | {{{{member:"اسم أو ID", role:"اسم أو ID"}}}}
+revoke_role             | {{{{member:"اسم أو ID", role:"اسم أو ID"}}}}
+kick_member             | {{{{member:"اسم أو ID", reason?}}}}
+ban_member              | {{{{member:"اسم أو ID", reason?}}}}
+change_nickname         | {{{{member:"اسم أو ID", nickname}}}}
+slowmode                | {{{{channel?, seconds:0}}}} — 0 يوقف السلو مود
+move_member             | {{{{member:"اسم أو ID", channel:"فويس"}}}}
 
 Discord Permissions:
 administrator, manage_channels, manage_roles, manage_expressions,
@@ -825,30 +824,26 @@ use_soundboard, use_external_sounds
 ══════════════════════════════════════════════
 شكل الردود — طبيعي وأوامر فقط
 ══════════════════════════════════════════════
-- ردودك العادية: تكتبها مثل ما يكتب المستخدم، كلام مريح وبسيط، **بدون أي صيغة JSON**.
-- لما تحتاج تستخدم أداة من الأدوات المتاحة: ضع أمر JSON واحد فقط **داخل صندوق كود بصيغة json**، بهالشكل:
-
+- الردود العادية: تكتبها مثل ما يكتب المستخدم، كلام مريح وبسيط، **بدون أي صيغة JSON**.
+- لما تحتاج تستخدم أداة من الأدوات المتاحة: ضع أمر JSON واحد فقط **داخل صندوق كود بصيغة json** بالضبط كما يلي:
   ```json
   {{"tool": "get_channels"}}
   أو
   {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم جديد", "type": "text"}}}}
 
-- إذا أردت إنشاء ملف وإرساله، استخدم:
-  ```json
-  {{"file": {{"name": "script.py", "content": "print('hello')"}}}}
-  يمكنك أيضاً دمج "reply" مع الملف إذا أردت رسالة مصاحبة:
-  {{"reply": "تفضل الملف", "file": {{"name": "code.js", "content": "console.log(1)"}}}}
+- **أداة file**: لا تستخدمها أبداً إلا إذا طلب منك المستخدم صراحةً إنشاء ملف، مثل "سوّي لي ملف" أو "حفظ الكود في ملف". في غير ذلك، لا تخرج JSON يحتوي على "file".
+- أبداً لا ترجع JSON فيه مفتاح "reply" لوحده؛ الرد النهائي يكون نص طبيعي بحت.
 
-· أبداً ما ترجع JSON فيه مفتاح "reply" فقط. الرد النهائي يكون نص طبيعي بحت بعد ما تخلص الأدوات.
-
-قواعد جديدة:
+قواعد إضافية:
 1. لا رسائل تأكيد — نفذ العملية مباشرة وأخبر بالنتيجة بأسلوبك الطبيعي.
 2. لا تخترع بيانات السيرفر — استخدم الأدوات.
 3. عمليات متعددة → واحدة واحدة، وانتظر نتيجة كل عملية.
 4. بعد آخر عملية → رد طبيعي مختصر.
 5. محادثة عادية أو سؤال → رد طبيعي مباشر بدون أي أداة.
 6. استخدم Discord Markdown فقط في الرد (بدون جداول، بدون HTML).
-7. لا تذكر اسم المستخدم في كل رسالة، فقط للضرورة (مثلاً لما توجّه له أمر خاص أو في سياق يستدعي اسمه)."""
+7. لا تذكر اسم المستخدم في كل رسالة، فقط للضرورة.
+8. عندما يرفق المستخدم ملفاً، سيظهر محتواه في الرسالة بين علامات ``` مع اسم الملف. تستطيع قراءته والتعامل معه مباشرة دون الحاجة لأداة خاصة. المرفقات النصية تُقرأ تلقائياً وتُضاف إلى رسالة المستخدم.
+9. **مهم جداً**: لا تستخدم JSON أبداً في الردود العادية. إذا لم تكن بحاجة إلى أداة، ردّ بنص بسيط. تنسيق JSON مسموح فقط داخل ```json عند استخدام أداة. أي JSON خارج ذلك سيُعتبر خطأ."""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -881,19 +876,20 @@ async def run_agent(
 
         print(f"  raw: {raw[:300]}")
 
-        # parse JSON
+        # parse JSON only if enclosed in ```json```
         parsed = None
-        m = re.search(r"\{[\s\S]*\}", raw)
-        if m:
+        json_match = re.search(r"```json\s*([\s\S]*?)```", raw)
+        if json_match:
             try:
-                parsed = json.loads(m.group())
+                parsed = json.loads(json_match.group(1))
             except Exception:
                 pass
 
+        # If no valid JSON command found, return raw text as reply
         if parsed is None:
             return raw, cur_sid, cur_pmid, []
 
-        # handle file generation
+        # handle file generation (only when explicitly inside json block)
         if "file" in parsed:
             file_info = parsed["file"]
             if not isinstance(file_info, dict) or "name" not in file_info or "content" not in file_info:
@@ -901,7 +897,6 @@ async def run_agent(
             safe_name = os.path.basename(file_info["name"])
             if not safe_name:
                 safe_name = "output.txt"
-            # sanitize extension
             content = str(file_info["content"])
             try:
                 tmp = tempfile.NamedTemporaryFile(
@@ -1221,72 +1216,71 @@ async def on_message(m: discord.Message):
 
     bot_name = client.user.display_name or client.user.name
 
-    # ── نظام الإيموجي: استبدال 👀 بـ ⏳ (يكتب) ──
+    # ── نظام الإيموجي: أضف ⏳ أولاً ثم أزل 👀 ──
     try:
-        await m.remove_reaction("👀", client.user)
         await m.add_reaction("⏳")
+        await m.remove_reaction("👀", client.user)
     except Exception:
         pass
 
-    async with m.channel.typing():
-        try:
-            reply, new_sid, new_pmid, generated_files = await run_agent(
-                guild             = m.guild,
-                channel           = m.channel,
-                user_msg          = final,
-                user_info         = user_info,
-                bot_name          = bot_name,
-                session_id        = us["session_id"],
-                parent_message_id = us["parent_message_id"],
-            )
+    try:
+        reply, new_sid, new_pmid, generated_files = await run_agent(
+            guild             = m.guild,
+            channel           = m.channel,
+            user_msg          = final,
+            user_info         = user_info,
+            bot_name          = bot_name,
+            session_id        = us["session_id"],
+            parent_message_id = us["parent_message_id"],
+        )
 
-            async with session_lock:
-                us["session_id"]        = new_sid
-                us["parent_message_id"] = new_pmid
+        async with session_lock:
+            us["session_id"]        = new_sid
+            us["parent_message_id"] = new_pmid
 
-            # حفظ في DB
-            if new_sid:
-                label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
-                await db_save_session(author.id, label, new_sid, new_pmid)
+        # حفظ في DB
+        if new_sid:
+            label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
+            await db_save_session(author.id, label, new_sid, new_pmid)
 
-            reply = reply or "✅ تم."
+        reply = reply or "✅ تم."
 
-            # إرسال الرد مع الملفات إن وجدت
-            chunks = [reply[i:i+1990] for i in range(0, len(reply), 1990)]
-            if generated_files:
-                discord_files = [discord.File(fp) for fp in generated_files]
-                if chunks:
-                    # أول جزء مع الملفات
-                    await m.reply(content=chunks[0], files=discord_files)
-                    for chunk in chunks[1:]:
-                        await m.channel.send(chunk)
-                else:
-                    await m.reply(files=discord_files)
-                # تنظيف الملفات المؤقتة
-                for fp in generated_files:
-                    try:
-                        os.unlink(fp)
-                    except Exception:
-                        pass
+        # إرسال الرد مع الملفات إن وجدت
+        chunks = [reply[i:i+1990] for i in range(0, len(reply), 1990)]
+        if generated_files:
+            discord_files = [discord.File(fp) for fp in generated_files]
+            if chunks:
+                # أول جزء مع الملفات
+                await m.reply(content=chunks[0], files=discord_files)
+                for chunk in chunks[1:]:
+                    await m.channel.send(chunk)
             else:
-                for chunk in chunks:
-                    await m.reply(chunk)
+                await m.reply(files=discord_files)
+            # تنظيف الملفات المؤقتة
+            for fp in generated_files:
+                try:
+                    os.unlink(fp)
+                except Exception:
+                    pass
+        else:
+            for chunk in chunks:
+                await m.reply(chunk)
 
-            # ── نظام الإيموجي: استبدال ⏳ بـ ☑️ (تم) ──
-            try:
-                await m.remove_reaction("⏳", client.user)
-                await m.add_reaction("☑️")
-            except Exception:
-                pass
+        # ── نظام الإيموجي: أضف ☑️ ثم أزل ⏳ ──
+        try:
+            await m.add_reaction("☑️")
+            await m.remove_reaction("⏳", client.user)
+        except Exception:
+            pass
 
-        except Exception as e:
-            print(f"[on_message] {e}")
-            await m.reply(f"⚠️ خطأ غير متوقع: {str(e)[:300]}")
-            try:
-                await m.remove_reaction("⏳", client.user)
-                await m.add_reaction("❌")
-            except Exception:
-                pass
+    except Exception as e:
+        print(f"[on_message] {e}")
+        await m.reply(f"⚠️ خطأ غير متوقع: {str(e)[:300]}")
+        try:
+            await m.add_reaction("❌")
+            await m.remove_reaction("⏳", client.user)
+        except Exception:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════
