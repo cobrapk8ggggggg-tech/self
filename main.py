@@ -124,6 +124,7 @@ async def db_get_sessions(user_id: int) -> list[dict]:
 async def db_delete_session(user_id: int, label: str):
     await sessions_col.delete_one({"user_id": user_id, "label": label})
 
+
 async def load_latest_session(user_id: int) -> dict | None:
     """تحميل أحدث جلسة محفوظة من قاعدة البيانات"""
     doc = await sessions_col.find_one(
@@ -773,23 +774,21 @@ use_soundboard, use_external_sounds
 - لما تحتاج تستخدم أداة من الأدوات المتاحة: ضع أمر JSON واحد فقط **داخل صندوق كود بصيغة json**، بهالشكل:
 
   ```json
-  {"tool": "get_channels"}
-  او
-  
-  {"tool": "execute", "action": "create_channel", "params": {"name": "روم جديد", "type": "text"}}
-  
+  {{"tool": "get_channels"}}
+  أو
+  {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم جديد", "type": "text"}}}}
   
 · أبداً ما ترجع JSON فيه مفتاح "reply". الرد النهائي يكون نص طبيعي بحت بعد ما تخلص الأدوات.
 
 قواعد جديدة:
-
 1. لا رسائل تأكيد — نفذ العملية مباشرة وأخبر بالنتيجة بأسلوبك الطبيعي.
 2. لا تخترع بيانات السيرفر — استخدم الأدوات.
 3. عمليات متعددة → واحدة واحدة، وانتظر نتيجة كل عملية.
 4. بعد آخر عملية → رد طبيعي مختصر.
 5. محادثة عادية أو سؤال → رد طبيعي مباشر بدون أي أداة.
 6. استخدم Discord Markdown فقط في الرد (بدون جداول، بدون HTML).
-7. لا تذكر اسم المستخدم في كل رسالة، فقط للضرورة (مثلاً لما توجّه له أمر خاص أو في سياق يستدعي اسمه).
+7. لا تذكر اسم المستخدم في كل رسالة، فقط للضرورة (مثلاً لما توجّه له أمر خاص أو في سياق يستدعي اسمه)."""
+
 
 # ══════════════════════════════════════════════════════════════
 #  AGENT LOOP
@@ -1099,14 +1098,15 @@ async def on_message(m: discord.Message):
     )
 
     async with session_lock:
-    if author.id not in user_sessions:
-        # محاولة تحميل أحدث جلسة من القاعدة
-        latest = await load_latest_session(author.id)
-        if latest:
-            user_sessions[author.id] = latest
-        else:
-            user_sessions[author.id] = {"session_id": None, "parent_message_id": None}
-    us = user_sessions[author.id]
+        if author.id not in user_sessions:
+            # محاولة تحميل أحدث جلسة من القاعدة
+            latest = await load_latest_session(author.id)
+            if latest:
+                user_sessions[author.id] = latest
+            else:
+                user_sessions[author.id] = {"session_id": None, "parent_message_id": None}
+        us = user_sessions[author.id]
+
     bot_name = client.user.display_name or client.user.name
 
     # ── نظام الإيموجي: استبدال 👀 بـ ⏳ (يكتب) ──
