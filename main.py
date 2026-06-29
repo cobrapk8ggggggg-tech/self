@@ -196,8 +196,8 @@ async def load_latest_session(user_id: int) -> dict | None:
 # ══════════════════════════════════════════════════════════════
 #  DeepSeek API — Low-level
 # ══════════════════════════════════════════════════════════════
-RAILWAY_URL = "http://107.172.78.104:8800"
-POW_URL = "http://107.172.78.104:8800/get_pow"
+RAILWAY_URL = "https://web-production-c09dc.up.railway.app"
+POW_URL     = f"{RAILWAY_URL}/pow"
 
 
 def _device_id() -> str:
@@ -239,7 +239,7 @@ def _build_headers(pow_response: str, token: str) -> dict:
 async def _get_pow() -> dict:
     token = DEEPSEEK_TOKEN
     async with aiohttp.ClientSession() as s:
-        for url in [f"{POW_API_URL}?authorization={token}", POW_API_URL]:
+        for url in [f"{POW_URL}?authorization={token}", POW_URL]:
             try:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
                     if r.status == 200:
