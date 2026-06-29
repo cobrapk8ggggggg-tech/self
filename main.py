@@ -785,6 +785,7 @@ get_members               → قائمة الأعضاء (اختياري: query �
 get_messages              → آخر رسائل القناة الحالية (اختياري: limit, member_id)
 server_info               → معلومات عامة عن السيرفر
 execute                   → تنفيذ عملية
+file                      → إنشاء ملف وإرساله للمستخدم
 
 ══════════════════════════════════════════════
 عمليات execute
@@ -825,14 +826,22 @@ use_soundboard, use_external_sounds
 شكل الردود — طبيعي وأوامر فقط
 ══════════════════════════════════════════════
 - الردود العادية: تكتبها مثل ما يكتب المستخدم، كلام مريح وبسيط، **بدون أي صيغة JSON**.
-- لما تحتاج تستخدم أداة من الأدوات المتاحة: ضع أمر JSON واحد فقط **داخل صندوق كود بصيغة json** بالضبط كما يلي:
+- لاستخدام الأدوات: ضع أمر JSON **داخل صندوق كود بصيغة json** بهذا الشكل:
   ```json
   {{"tool": "get_channels"}}
   أو
   {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم جديد", "type": "text"}}}}
+- لإنشاء ملف: استخدم صيغة JSON داخل ```json:
+  ```json
+  {{"file": {{"name": "script.py", "content": "print('hello')"}}}}
+  أو
+  {{"reply": "تفضل الملف", "file": {{"name": "code.js", "content": "console.log(1)"}}}}
+  أو بصيغة الأداة العادية (tool: file):
+  ```json
+  {{"tool": "file", "params": {{"name": "script.py", "content": "..."}}}}
 
-- **أداة file**: لا تستخدمها أبداً إلا إذا طلب منك المستخدم صراحةً إنشاء ملف، مثل "سوّي لي ملف" أو "حفظ الكود في ملف". في غير ذلك، لا تخرج JSON يحتوي على "file".
-- أبداً لا ترجع JSON فيه مفتاح "reply" لوحده؛ الرد النهائي يكون نص طبيعي بحت.
+· لا تستخدم JSON أبداً إلا داخل صندوق كود json وعند الحاجة لأداة. أي JSON خارجه سيعتبر نصاً عادياً.
+· أبداً لا ترجع JSON فيه مفتاح "reply" لوحده.
 
 قواعد إضافية:
 1. لا رسائل تأكيد — نفذ العملية مباشرة وأخبر بالنتيجة بأسلوبك الطبيعي.
@@ -876,8 +885,10 @@ async def run_agent(
 
         print(f"  raw: {raw[:300]}")
 
-        # parse JSON only if enclosed in ```json```
+        # ── محاولة استخراج JSON ──
         parsed = None
+
+        # أولاً: محاولة البحث داخل ```json ... ```
         json_match = re.search(r"```json\s*([\s\S]*?)```", raw)
         if json_match:
             try:
@@ -885,40 +896,70 @@ async def run_agent(
             except Exception:
                 pass
 
-        # If no valid JSON command found, return raw text as reply
+        # ثانياً: إذا لم نجد، نحاول أي JSON موجود في النص (للحالات غير المتوقعة)
+        if parsed is None:
+            m = re.search(r"\{[\s\S]*\}", raw)
+            if m:
+                try:
+                    parsed = json.loads(m.group())
+                except Exception:
+                    pass
+
+        # إذا لم نستطع تحليل أي JSON، نعيد النص الخام كرد عادي
         if parsed is None:
             return raw, cur_sid, cur_pmid, []
 
-        # handle file generation (only when explicitly inside json block)
+        # ── معالجة أمر إنشاء ملف (صيغة file المباشرة) ──
         if "file" in parsed:
             file_info = parsed["file"]
-            if not isinstance(file_info, dict) or "name" not in file_info or "content" not in file_info:
-                return raw, cur_sid, cur_pmid, []  # invalid, return as text
-            safe_name = os.path.basename(file_info["name"])
-            if not safe_name:
-                safe_name = "output.txt"
-            content = str(file_info["content"])
-            try:
-                tmp = tempfile.NamedTemporaryFile(
-                    mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
-                )
-                tmp.write(content)
-                tmp.close()
-                file_path = tmp.name
-            except Exception as e:
-                return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
+            if isinstance(file_info, dict) and "name" in file_info and "content" in file_info:
+                safe_name = os.path.basename(file_info["name"])
+                if not safe_name:
+                    safe_name = "output.txt"
+                content = str(file_info["content"])
+                try:
+                    tmp = tempfile.NamedTemporaryFile(
+                        mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
+                    )
+                    tmp.write(content)
+                    tmp.close()
+                    file_path = tmp.name
+                except Exception as e:
+                    return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
 
-            reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
-            return reply_text, cur_sid, cur_pmid, [file_path]
+                reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
+                return reply_text, cur_sid, cur_pmid, [file_path]
 
+        # ── معالجة أمر إنشاء ملف (صيغة tool: file مع params) ──
+        if parsed.get("tool") == "file":
+            params = parsed.get("params", {})
+            if isinstance(params, dict) and "name" in params and "content" in params:
+                safe_name = os.path.basename(params["name"])
+                if not safe_name:
+                    safe_name = "output.txt"
+                content = str(params["content"])
+                try:
+                    tmp = tempfile.NamedTemporaryFile(
+                        mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
+                    )
+                    tmp.write(content)
+                    tmp.close()
+                    file_path = tmp.name
+                except Exception as e:
+                    return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
+
+                reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
+                return reply_text, cur_sid, cur_pmid, [file_path]
+
+        # ── رد عادي يحتوي على reply فقط ──
         if "reply" in parsed:
             return parsed["reply"], cur_sid, cur_pmid, []
 
+        # ── أدوات أخرى ──
         tool = parsed.get("tool", "")
         if not tool:
             return raw, cur_sid, cur_pmid, []
 
-        # ── تنفيذ الأداة ──
         result: dict = {}
 
         if tool == "get_channels":
