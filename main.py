@@ -21,7 +21,7 @@ import re
 import time
 import tempfile
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 import discord
@@ -810,6 +810,149 @@ async def tool_get_messages(
     return {"messages": msgs, "count": len(msgs)}
 
 
+
+async def tool_get_audit_log(guild: discord.Guild, limit: int = 20, action: str | None = None) -> dict:
+    """يعرض آخر سجلات التدقيق لمساعدة الإدارة على معرفة من نفّذ ماذا ومتى."""
+    action_obj = None
+    if action:
+        action_key = action.lower().strip()
+        action_obj = getattr(discord.AuditLogAction, action_key, None)
+    entries = []
+    async for entry in guild.audit_logs(limit=min(int(limit), 100), action=action_obj):
+        entries.append({
+            "id": entry.id,
+            "action": str(entry.action).replace("AuditLogAction.", ""),
+            "user": entry.user.display_name if entry.user else None,
+            "user_id": entry.user.id if entry.user else None,
+            "target": str(entry.target) if entry.target else None,
+            "reason": entry.reason,
+            "created_at": entry.created_at.strftime("%Y-%m-%d %H:%M"),
+        })
+    return {"audit_log": entries, "count": len(entries)}
+
+
+async def tool_get_invites(guild: discord.Guild) -> dict:
+    """يعرض دعوات السيرفر النشطة مع الاستخدامات والانتهاء."""
+    invites = await guild.invites()
+    return {
+        "invites": [
+            {
+                "code": invite.code,
+                "url": invite.url,
+                "channel": invite.channel.name if invite.channel else None,
+                "inviter": invite.inviter.display_name if invite.inviter else None,
+                "uses": invite.uses,
+                "max_uses": invite.max_uses,
+                "expires_at": invite.expires_at.strftime("%Y-%m-%d %H:%M") if invite.expires_at else None,
+            }
+            for invite in invites[:100]
+        ],
+        "count": len(invites),
+    }
+
+
+def tool_get_emojis(guild: discord.Guild) -> dict:
+    """يعرض إيموجيات السيرفر المخصصة وحالتها."""
+    return {
+        "emojis": [
+            {
+                "id": emoji.id,
+                "name": emoji.name,
+                "animated": emoji.animated,
+                "available": emoji.available,
+                "url": str(emoji.url),
+            }
+            for emoji in guild.emojis
+        ],
+        "count": len(guild.emojis),
+    }
+
+
+def tool_get_stickers(guild: discord.Guild) -> dict:
+    """يعرض ملصقات السيرفر المخصصة."""
+    return {
+        "stickers": [
+            {
+                "id": sticker.id,
+                "name": sticker.name,
+                "description": sticker.description,
+                "emoji": sticker.emoji,
+                "url": sticker.url,
+            }
+            for sticker in guild.stickers
+        ],
+        "count": len(guild.stickers),
+    }
+
+
+async def tool_get_bans(guild: discord.Guild, limit: int = 100) -> dict:
+    """يعرض الأعضاء المحظورين وأسباب الحظر."""
+    bans = []
+    async for ban in guild.bans(limit=min(int(limit), 1000)):
+        bans.append({
+            "user_id": ban.user.id,
+            "username": ban.user.name,
+            "display": ban.user.display_name,
+            "reason": ban.reason,
+        })
+    return {"bans": bans, "count": len(bans)}
+
+
+async def tool_get_pinned_messages(channel: discord.TextChannel) -> dict:
+    """يعرض الرسائل المثبتة في قناة نصية."""
+    pins = await channel.pins()
+    return {
+        "pinned_messages": [
+            {
+                "id": msg.id,
+                "author": msg.author.display_name,
+                "author_id": msg.author.id,
+                "content": msg.content[:500],
+                "created_at": msg.created_at.strftime("%Y-%m-%d %H:%M"),
+                "jump_url": msg.jump_url,
+            }
+            for msg in pins[:50]
+        ],
+        "count": len(pins),
+    }
+
+
+def tool_get_voice_states(guild: discord.Guild) -> dict:
+    """يعرض الموجودين حالياً في القنوات الصوتية وحالاتهم."""
+    rows = []
+    for channel in guild.voice_channels:
+        for member in channel.members:
+            voice = member.voice
+            rows.append({
+                "member_id": member.id,
+                "display": member.display_name,
+                "channel_id": channel.id,
+                "channel": channel.name,
+                "muted": bool(voice and (voice.mute or voice.self_mute)),
+                "deafened": bool(voice and (voice.deaf or voice.self_deaf)),
+                "streaming": bool(voice and voice.self_stream),
+            })
+    return {"voice_states": rows, "count": len(rows)}
+
+
+async def tool_search_messages(channel: discord.TextChannel, query: str, limit: int = 200) -> dict:
+    """يبحث نصياً داخل آخر رسائل قناة محددة."""
+    ql = str(query).lower().strip()
+    matches = []
+    async for msg in channel.history(limit=min(int(limit), 1000)):
+        if ql and ql in msg.content.lower():
+            matches.append({
+                "id": msg.id,
+                "author": msg.author.display_name,
+                "author_id": msg.author.id,
+                "content": msg.content[:500],
+                "time": msg.created_at.strftime("%Y-%m-%d %H:%M"),
+                "jump_url": msg.jump_url,
+            })
+        if len(matches) >= 50:
+            break
+    return {"matches": matches, "count": len(matches)}
+
 async def tool_execute(
     guild: discord.Guild,
     channel: discord.TextChannel,
@@ -865,7 +1008,7 @@ async def tool_execute(
             await ch.edit(name=params["new_name"])
             return {"ok": True, "msg": f"✅ تم تغيير اسم **{old}** → **{params['new_name']}**"}
 
-         elif a == "clear_channel":
+        elif a == "clear_channel":
             target_ch = channel
             if params.get("channel"):
                 found = _find_channel(guild, str(params["channel"]))
@@ -1062,6 +1205,114 @@ async def tool_execute(
                 "message_id": sent.id,
             }
 
+        elif a == "create_thread":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لإنشاء الثريد."}
+            thread = await target_ch.create_thread(
+                name=params["name"],
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=int(params.get("auto_archive_duration", 1440)),
+            )
+            return {"ok": True, "msg": f"✅ تم إنشاء الثريد **{thread.name}** في **#{target_ch.name}**", "thread_id": thread.id}
+
+        elif a == "lock_channel":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لقفلها."}
+            await target_ch.set_permissions(guild.default_role, send_messages=False)
+            return {"ok": True, "msg": f"🔒 تم قفل الكتابة في **#{target_ch.name}**"}
+
+        elif a == "unlock_channel":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لفتحها."}
+            await target_ch.set_permissions(guild.default_role, send_messages=None)
+            return {"ok": True, "msg": f"🔓 تم فتح الكتابة في **#{target_ch.name}**"}
+
+        elif a == "set_channel_topic":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لتعديل الوصف."}
+            topic = str(params.get("topic", ""))[:1024]
+            await target_ch.edit(topic=topic)
+            return {"ok": True, "msg": f"✅ تم تعديل وصف **#{target_ch.name}**"}
+
+        elif a == "create_invite":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, (discord.TextChannel, discord.VoiceChannel)):
+                    target_ch = found
+            if target_ch is None:
+                return {"ok": False, "msg": "❌ حدد قناة صحيحة لإنشاء الدعوة."}
+            max_age = int(params.get("max_age", 86400))
+            max_uses = int(params.get("max_uses", 0))
+            invite = await target_ch.create_invite(max_age=max_age, max_uses=max_uses, unique=True, reason=params.get("reason", "Created by Disor Bot"))
+            return {"ok": True, "msg": f"✅ تم إنشاء دعوة للقناة **{target_ch.name}**: {invite.url}", "url": invite.url}
+
+        elif a == "timeout_member":
+            member = _find_member(guild, str(params["member"]))
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
+            minutes = max(1, min(int(params.get("minutes", 10)), 40320))
+            until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+            await member.timeout(until, reason=params.get("reason", "—"))
+            return {"ok": True, "msg": f"⏳ تم إعطاء تايم آوت لـ **{member.display_name}** لمدة **{minutes}** دقيقة"}
+
+        elif a == "remove_timeout":
+            member = _find_member(guild, str(params["member"]))
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
+            await member.timeout(None, reason=params.get("reason", "—"))
+            return {"ok": True, "msg": f"✅ تم إزالة التايم آوت عن **{member.display_name}**"}
+
+        elif a == "unban_member":
+            user_id = int(params["user"])
+            user = await client.fetch_user(user_id)
+            await guild.unban(user, reason=params.get("reason", "—"))
+            return {"ok": True, "msg": f"✅ تم فك الحظر عن **{user}**"}
+
+        elif a == "pin_message":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لتثبيت الرسالة."}
+            msg = await target_ch.fetch_message(int(params["message_id"]))
+            await msg.pin(reason=params.get("reason", "Pinned by Disor Bot"))
+            return {"ok": True, "msg": f"📌 تم تثبيت الرسالة في **#{target_ch.name}**"}
+
+        elif a == "unpin_message":
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None or not isinstance(target_ch, discord.TextChannel):
+                return {"ok": False, "msg": "❌ حدد قناة نصية صحيحة لإلغاء التثبيت."}
+            msg = await target_ch.fetch_message(int(params["message_id"]))
+            await msg.unpin(reason=params.get("reason", "Unpinned by Disor Bot"))
+            return {"ok": True, "msg": f"📌 تم إلغاء تثبيت الرسالة من **#{target_ch.name}**"}
+
         # ── استنساخ سيرفر كامل: كاتيكوريات + رومات + رتب ──
         elif a == "clone_server":
             source_guild = guild
@@ -1200,17 +1451,21 @@ def build_system(bot_name: str, mode: str = "default", thinking: bool = False) -
 ══════════════════════════════════════════════
 الأدوات المتاحة — استخدمها فقط لإدارة السيرفر الفعلية
 ══════════════════════════════════════════════
-get_channels / get_categories / get_roles / get_members / get_messages / server_info / list_all_guilds / execute / file
+get_channels / get_categories / get_roles / get_members / get_messages / server_info / list_all_guilds
+get_audit_log / get_invites / get_emojis / get_stickers / get_bans / get_pinned_messages / get_voice_states / search_messages / execute / file
 
 أدوات القراءة (get_channels, get_categories, get_roles, get_members, server_info, get_messages) تقبل
 "target_guild" اختياري داخل params (اسم أو ID سيرفر) لقراءة بيانات أي سيرفر آخر أنت عضو فيه، وليس فقط الحالي.
+search_messages و get_pinned_messages تقبل "channel" اختياري لتحديد قناة نصية. get_audit_log يقبل "limit" و "action" اختياريين.
 استخدم list_all_guilds لمعرفة كل السيرفرات المتاحة لك مع أسمائها وIDs.
 
 عمليات execute:
 create_category | create_channel | delete_channel | rename_channel
 clear_channel | delete_member_messages | create_role | delete_role
 edit_role | grant_role | revoke_role | kick_member | ban_member
-change_nickname | slowmode | move_member | send_message | mention_everyone | clone_server
+change_nickname | slowmode | move_member | send_message | mention_everyone | create_thread
+lock_channel | unlock_channel | set_channel_topic | create_invite | timeout_member | remove_timeout
+unban_member | pin_message | unpin_message | clone_server
 
 كل عمليات execute (ما عدا clone_server) تقبل "target_guild" اختياري داخل params لتنفيذ العملية على
 سيرفر آخر غير الحالي، وتقبل "channel" اختياري لتحديد قناة غير القناة الحالية.
@@ -1409,7 +1664,11 @@ async def run_agent(
                 params = obj.get("params", {})
                 result = await tool_execute(guild, channel, action, params)
                 all_results.append(f"[TOOL_RESULT: {action}]\n{json.dumps(result, ensure_ascii=False)}")
-            elif tool in ("get_channels", "get_categories", "get_roles", "get_members", "server_info", "list_all_guilds", "get_messages"):
+            elif tool in (
+                "get_channels", "get_categories", "get_roles", "get_members", "server_info", "list_all_guilds",
+                "get_messages", "get_audit_log", "get_invites", "get_emojis", "get_stickers", "get_bans",
+                "get_pinned_messages", "get_voice_states", "search_messages",
+            ):
                 # أدوات القراءة – مع دعم target_guild
                 read_params = obj.get("params", {})
                 target_guild = guild
@@ -1443,6 +1702,35 @@ async def run_agent(
                             target_ch = ch_found
                     if isinstance(target_ch, discord.TextChannel):
                         result = await tool_get_messages(target_ch, limit, member_id)
+                    else:
+                        result = {"error": "حدد قناة نصية صحيحة"}
+                elif tool == "get_audit_log":
+                    result = await tool_get_audit_log(target_guild, int(read_params.get("limit", 20)), read_params.get("action"))
+                elif tool == "get_invites":
+                    result = await tool_get_invites(target_guild)
+                elif tool == "get_emojis":
+                    result = tool_get_emojis(target_guild)
+                elif tool == "get_stickers":
+                    result = tool_get_stickers(target_guild)
+                elif tool == "get_bans":
+                    result = await tool_get_bans(target_guild, int(read_params.get("limit", 100)))
+                elif tool == "get_pinned_messages":
+                    target_ch = channel
+                    if read_params.get("channel"):
+                        ch_found = _find_channel(target_guild, str(read_params["channel"]))
+                        if ch_found and isinstance(ch_found, discord.TextChannel):
+                            target_ch = ch_found
+                    result = await tool_get_pinned_messages(target_ch) if isinstance(target_ch, discord.TextChannel) else {"error": "حدد قناة نصية صحيحة"}
+                elif tool == "get_voice_states":
+                    result = tool_get_voice_states(target_guild)
+                elif tool == "search_messages":
+                    target_ch = channel
+                    if read_params.get("channel"):
+                        ch_found = _find_channel(target_guild, str(read_params["channel"]))
+                        if ch_found and isinstance(ch_found, discord.TextChannel):
+                            target_ch = ch_found
+                    if isinstance(target_ch, discord.TextChannel):
+                        result = await tool_search_messages(target_ch, read_params.get("query", ""), int(read_params.get("limit", 200)))
                     else:
                         result = {"error": "حدد قناة نصية صحيحة"}
                 all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
@@ -1492,12 +1780,12 @@ async def cmd_help(interaction: discord.Interaction):
 **/مزود-باو** `[railway|telegram]` — تبديل مزود POW
 
 ## 🛠️ قدرات الذكاء الاصطناعي
-**قراءة:** الرومات، الكاتيكوريات، الرتب، الأعضاء، الرسائل، معلومات السيرفر — في السيرفر الحالي أو أي سيرفر آخر
+**قراءة:** الرومات، الكاتيكوريات، الرتب، الأعضاء، الرسائل، معلومات السيرفر، سجل التدقيق، الدعوات، الإيموجيات، الملصقات، المحظورين، المثبتات، حالات الفويس، والبحث داخل الرسائل — في السيرفر الحالي أو أي سيرفر آخر
 **الوعي الشامل:** يعرف كل السيرفرات التي هو فيها، رتبه، صلاحياته، والقناة التي يتحدث فيها بالضبط
-**إدارة الرومات:** إنشاء / حذف / تغيير اسم / سلو مود / حذف رسائل
+**إدارة الرومات:** إنشاء / حذف / تغيير اسم / سلو مود / حذف رسائل / إنشاء ثريد / قفل وفتح الكتابة / تعديل وصف القناة / إنشاء دعوات
 **إدارة الرتب:** إنشاء / حذف / تعديل / إعطاء / سحب
-**إدارة الأعضاء:** كيك / بان / تغيير نكنيم / نقل للفويس
-**الرسائل والمنشن:** إرسال رسائل أو منشن @everyone في أي قناة بأي سيرفر هو فيه
+**إدارة الأعضاء:** كيك / بان / فك بان / تايم آوت وإزالته / تغيير نكنيم / نقل للفويس
+**الرسائل والمنشن:** إرسال رسائل أو منشن @everyone في أي قناة بأي سيرفر هو فيه + تثبيت/إلغاء تثبيت رسائل
 **استنساخ سيرفر:** نسخ كامل البنية (رتب + كاتيكوريات + رومات) من سيرفر إلى آخر
 **الملفات:** قراءة المرفقات النصية + إنشاء ملفات وإرسالها (كود قصير يُكتب مباشرة، الطويل فقط كملف)
 
