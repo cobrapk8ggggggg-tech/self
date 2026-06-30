@@ -865,9 +865,9 @@ async def tool_execute(
             await ch.edit(name=params["new_name"])
             return {"ok": True, "msg": f"✅ تم تغيير اسم **{old}** → **{params['new_name']}**"}
 
-        elif a == "clear_channel":
-    target_ch = channel
-    if params.get("channel"):
+         elif a == "clear_channel":
+            target_ch = channel
+            if params.get("channel"):
         found = _find_channel(guild, str(params["channel"]))
         if found and isinstance(found, discord.TextChannel):
             target_ch = found
@@ -887,7 +887,7 @@ async def tool_execute(
     deleted = await target_ch.purge(limit=min(limit, 500), check=check)
     return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
 
-elif a == "delete_member_messages":
+         elif a == "delete_member_messages":
     member = _find_member(guild, str(params["member"]))
     if not member:
         return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
