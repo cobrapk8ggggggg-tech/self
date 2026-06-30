@@ -866,34 +866,53 @@ async def tool_execute(
             return {"ok": True, "msg": f"✅ تم تغيير اسم **{old}** → **{params['new_name']}**"}
 
         elif a == "clear_channel":
-            target_ch = channel
-            if params.get("channel"):
-                found = _find_channel(guild, str(params["channel"]))
-                if found and isinstance(found, discord.TextChannel):
-                    target_ch = found
-            if target_ch is None:
-                return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
-            limit   = int(params.get("limit", 100))
-            deleted = await target_ch.purge(limit=min(limit, 500))
-            return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
+    target_ch = channel
+    if params.get("channel"):
+        found = _find_channel(guild, str(params["channel"]))
+        if found and isinstance(found, discord.TextChannel):
+            target_ch = found
+    if target_ch is None:
+        return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
+    limit = int(params.get("limit", 100))
+    before_msg = None
+    if params.get("before"):
+        try:
+            before_id = int(params["before"])
+            before_msg = await target_ch.fetch_message(before_id)
+        except:
+            pass
+    check = None
+    if before_msg:
+        check = lambda m: m.id < before_msg.id  # أقدم من الرسالة المرجعية
+    deleted = await target_ch.purge(limit=min(limit, 500), check=check)
+    return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
 
-        elif a == "delete_member_messages":
-            member = _find_member(guild, str(params["member"]))
-            if not member:
-                return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
-            target_ch = channel
-            if params.get("channel"):
-                found = _find_channel(guild, str(params["channel"]))
-                if found and isinstance(found, discord.TextChannel):
-                    target_ch = found
-            if target_ch is None:
-                return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
-            limit   = int(params.get("limit", 100))
-            deleted = await target_ch.purge(
-                limit=min(limit, 500),
-                check=lambda m: m.author.id == member.id,
-            )
-            return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة للعضو **{member.display_name}**"}
+elif a == "delete_member_messages":
+    member = _find_member(guild, str(params["member"]))
+    if not member:
+        return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
+    target_ch = channel
+    if params.get("channel"):
+        found = _find_channel(guild, str(params["channel"]))
+        if found and isinstance(found, discord.TextChannel):
+            target_ch = found
+    if target_ch is None:
+        return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
+    limit = int(params.get("limit", 100))
+    before_msg = None
+    if params.get("before"):
+        try:
+            before_id = int(params["before"])
+            before_msg = await target_ch.fetch_message(before_id)
+        except:
+            pass
+    def check(m):
+        ok = m.author.id == member.id
+        if before_msg:
+            ok = ok and m.id < before_msg.id
+        return ok
+    deleted = await target_ch.purge(limit=min(limit, 500), check=check)
+    return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة للعضو **{member.display_name}**"}
 
         elif a == "create_role":
             try:
@@ -1268,6 +1287,38 @@ message.channel.send({{ content: 'هذا الكود المطلوب:', files: [fi
 MAX_STEPS = 12
 
 
+def extract_json_objects(text: str) -> list[dict]:
+    """يستخرج كل كائنات JSON الفردية من النص، حتى لو كانت متعددة أو بدون ```json"""
+    objects = []
+    # أولاً: استخراج المحتوى داخل ```json (قد يكون عدة أسطر)
+    for match in re.finditer(r"```json\s*([\s\S]*?)```", text):
+        block = match.group(1).strip()
+        # محاولة تحميل ككائن واحد
+        try:
+            obj = json.loads(block)
+            if isinstance(obj, dict):
+                objects.append(obj)
+        except json.JSONDecodeError:
+            # قد يكون هناك عدة كائنات متجاورة: {"a":1}{"b":2}
+            # نستخدم regex لاستخراج كل كائن متكامل
+            for m in re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", block):
+                try:
+                    objects.append(json.loads(m.group()))
+                except:
+                    pass
+    # ثانياً: البحث عن أي JSON في النص العادي (خارج ```json)
+    # نمسح النص الموجود داخل ```json أولاً لتجنب التكرار
+    cleaned = re.sub(r"```json\s*[\s\S]*?```", "", text)
+    for m in re.finditer(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", cleaned):
+        try:
+            obj = json.loads(m.group())
+            if isinstance(obj, dict) and obj not in objects:
+                objects.append(obj)
+        except:
+            pass
+    return objects
+
+
 async def run_agent(
     guild: discord.Guild,
     channel: discord.TextChannel,
@@ -1298,49 +1349,22 @@ async def run_agent(
 
         print(f"  raw: {raw[:300]}")
 
-        # ── استخراج جميع أوامر JSON من الرد ──
-        json_blocks = re.findall(r"```json\s*([\s\S]*?)```", raw)
-        
-        parsed_list = []
-        for block in json_blocks:
-            try:
-                parsed = json.loads(block)
-                if isinstance(parsed, dict):
-                    parsed_list.append(parsed)
-            except Exception:
-                pass
+        # استخراج كل كائنات JSON
+        json_objects = extract_json_objects(raw)
 
-        # لو ما لقينا أي JSON، ممكن يكون الرد النهائي
-        if not parsed_list:
-            # نتحقق من وجود file مباشر (الصيغة المختصرة)
-            if '"file"' in raw or '"name"' in raw:
-                try:
-                    m = re.search(r'\{[\s\S]*"file"[\s\S]*\}', raw)
-                    if m:
-                        parsed = json.loads(m.group())
-                        if "file" in parsed:
-                            parsed_list.append(parsed)
-                except Exception:
-                    pass
-            
-            # إذا ما زال فارغاً، فهو رد نصي عادي
-            if not parsed_list:
-                return raw, cur_sid, cur_pmid, []
-
-        # ── تنفيذ جميع الأدوات وتجميع النتائج ──
         all_results = []
         files_to_send = []
-        final_reply = None
+        final_reply_text = None
 
-        for parsed in parsed_list:
-            # هل فيه reply؟
-            if "reply" in parsed and "tool" not in parsed and "file" not in parsed:
-                final_reply = parsed["reply"]
+        for obj in json_objects:
+            # إذا كان يحتوي على reply فقط بدون أوامر
+            if "reply" in obj and "tool" not in obj and "file" not in obj and "action" not in obj:
+                final_reply_text = obj["reply"]
                 continue
 
-            # ── file (صيغة مختصرة) ──
-            if "file" in parsed:
-                file_info = parsed["file"]
+            # التعامل مع أداة file (صيغة مباشرة)
+            if "file" in obj:
+                file_info = obj["file"]
                 if isinstance(file_info, dict) and "name" in file_info and "content" in file_info:
                     safe_name = os.path.basename(file_info["name"]) or "output.txt"
                     content   = str(file_info["content"])
@@ -1352,19 +1376,15 @@ async def run_agent(
                         tmp.close()
                         files_to_send.append(tmp.name)
                         all_results.append(f"[FILE_CREATED: {safe_name}]")
-                        if "reply" in parsed:
-                            final_reply = parsed["reply"]
+                        if "reply" in obj:
+                            final_reply_text = obj["reply"]
                     except Exception as e:
                         all_results.append(f"[FILE_ERROR: {e}]")
                 continue
 
-            tool = parsed.get("tool", "")
-            if not tool:
-                continue
-
-            # ── tool: file ──
-            if tool == "file":
-                params = parsed.get("params", {})
+            # إذا كان tool == "file"
+            if obj.get("tool") == "file":
+                params = obj.get("params", {})
                 if isinstance(params, dict) and "name" in params and "content" in params:
                     safe_name = os.path.basename(params["name"]) or "output.txt"
                     content   = str(params["content"])
@@ -1376,67 +1396,71 @@ async def run_agent(
                         tmp.close()
                         files_to_send.append(tmp.name)
                         all_results.append(f"[FILE_CREATED: {safe_name}]")
-                        if "reply" in parsed:
-                            final_reply = parsed["reply"]
+                        if "reply" in obj:
+                            final_reply_text = obj["reply"]
                     except Exception as e:
                         all_results.append(f"[FILE_ERROR: {e}]")
                 continue
 
-            # ── الأدوات القرائية (تدعم target_guild) ──
-            result: dict = {}
-            read_params  = parsed.get("params") or {}
-            target_guild = guild
-            if read_params.get("target_guild"):
-                found_g = _find_guild(str(read_params["target_guild"]))
-                if found_g:
-                    target_guild = found_g
-                else:
-                    result = {"error": f"ما لقيت سيرفر: {read_params['target_guild']}"}
-                    all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
-                    continue
-
-            if tool == "get_channels":
-                result = tool_get_channels(target_guild)
-            elif tool == "get_categories":
-                result = tool_get_categories(target_guild)
-            elif tool == "get_roles":
-                result = tool_get_roles(target_guild)
-            elif tool == "get_members":
-                query  = read_params.get("query")
-                result = tool_get_members(target_guild, query)
-            elif tool == "server_info":
-                result = tool_server_info(target_guild)
-            elif tool == "list_all_guilds":
-                result = tool_list_all_guilds()
-            elif tool == "get_messages":
-                limit     = int(read_params.get("limit", 100))
-                member_id = read_params.get("member_id")
-                target_ch = channel
-                if read_params.get("channel"):
-                    found_ch = _find_channel(target_guild, str(read_params["channel"]))
-                    if found_ch and isinstance(found_ch, discord.TextChannel):
-                        target_ch = found_ch
-                if isinstance(target_ch, discord.TextChannel):
-                    result = await tool_get_messages(target_ch, limit, member_id)
-                else:
-                    result = {"error": "حدد قناة نصية صحيحة (channel) لقراءة رسائلها"}
-            elif tool == "execute":
-                action = parsed.get("action", "")
-                params = parsed.get("params", {})
+            # أوامر execute (أو أدوات أخرى)
+            tool = obj.get("tool", "")
+            if tool == "execute":
+                action = obj.get("action", "")
+                params = obj.get("params", {})
                 result = await tool_execute(guild, channel, action, params)
+                all_results.append(f"[TOOL_RESULT: {action}]\n{json.dumps(result, ensure_ascii=False)}")
+            elif tool in ("get_channels", "get_categories", "get_roles", "get_members", "server_info", "list_all_guilds", "get_messages"):
+                # أدوات القراءة – مع دعم target_guild
+                read_params = obj.get("params", {})
+                target_guild = guild
+                if read_params.get("target_guild"):
+                    found = _find_guild(str(read_params["target_guild"]))
+                    if found:
+                        target_guild = found
+                    else:
+                        result = {"error": f"ما لقيت سيرفر: {read_params['target_guild']}"}
+                        all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
+                        continue
+                if tool == "get_channels":
+                    result = tool_get_channels(target_guild)
+                elif tool == "get_categories":
+                    result = tool_get_categories(target_guild)
+                elif tool == "get_roles":
+                    result = tool_get_roles(target_guild)
+                elif tool == "get_members":
+                    result = tool_get_members(target_guild, read_params.get("query"))
+                elif tool == "server_info":
+                    result = tool_server_info(target_guild)
+                elif tool == "list_all_guilds":
+                    result = tool_list_all_guilds()
+                elif tool == "get_messages":
+                    limit = int(read_params.get("limit", 100))
+                    member_id = read_params.get("member_id")
+                    target_ch = channel
+                    if read_params.get("channel"):
+                        ch_found = _find_channel(target_guild, str(read_params["channel"]))
+                        if ch_found and isinstance(ch_found, discord.TextChannel):
+                            target_ch = ch_found
+                    if isinstance(target_ch, discord.TextChannel):
+                        result = await tool_get_messages(target_ch, limit, member_id)
+                    else:
+                        result = {"error": "حدد قناة نصية صحيحة"}
+                all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
             else:
-                result = {"error": f"أداة غير معروفة: {tool}"}
+                # أداة غير معروفة
+                all_results.append(f"[UNKNOWN_TOOL: {tool}]")
 
-            all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
-            print(f"  tool='{tool}' → {str(result)[:200]}")
+        # إذا كان هناك رد نصي صريح، نرسله فوراً
+        if final_reply_text:
+            return final_reply_text, cur_sid, cur_pmid, files_to_send
 
-        # إذا كان فيه رد نهائي، نرسله فوراً
-        if final_reply:
-            return final_reply, cur_sid, cur_pmid, files_to_send
+        # إذا لم تكن هناك أي نتائج (لا أوامر ولا رد)، نعيد النص كما هو
+        if not all_results:
+            return raw, cur_sid, cur_pmid, []
 
-        # وإلا، نرسل النتائج المجمعة للنموذج ليكمل
+        # وإلا، نرسل النتائج مجتمعة للنموذج ليكمل
         combined = "\n".join(all_results)
-        cur_prompt = f"تم تنفيذ الأوامر التالية:\n{combined}\n\nاستكمل."
+        cur_prompt = f"نتائج الأوامر:\n{combined}\n\nاستمر في التنفيذ أو قدم الرد النهائي."
 
     return "✅ تم.", cur_sid, cur_pmid, []
 
