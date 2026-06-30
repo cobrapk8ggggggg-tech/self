@@ -817,19 +817,25 @@ async def tool_get_audit_log(guild: discord.Guild, limit: int = 20, action: str 
     if action:
         action_key = action.lower().strip()
         action_obj = getattr(discord.AuditLogAction, action_key, None)
-    entries = []
-    async for entry in guild.audit_logs(limit=min(int(limit), 100), action=action_obj):
-        entries.append({
-            "id": entry.id,
-            "action": str(entry.action).replace("AuditLogAction.", ""),
-            "user": entry.user.display_name if entry.user else None,
-            "user_id": entry.user.id if entry.user else None,
-            "target": str(entry.target) if entry.target else None,
-            "reason": entry.reason,
-            "created_at": entry.created_at.strftime("%Y-%m-%d %H:%M"),
-        })
-    return {"audit_log": entries, "count": len(entries)}
 
+    entries = []
+    try:
+        async for entry in guild.audit_logs(limit=min(int(limit), 100), action=action_obj):
+            entries.append({
+                "id": entry.id,
+                "action": str(entry.action).replace("AuditLogAction.", ""),
+                "user": entry.user.display_name if entry.user else None,
+                "user_id": entry.user.id if entry.user else None,
+                "target": str(entry.target) if entry.target else None,
+                "reason": entry.reason,
+                "created_at": entry.created_at.strftime("%Y-%m-%d %H:%M"),
+            })
+    except discord.Forbidden:
+        return {"error": "⛔ البوت لا يملك صلاحية 'عرض سجل التدقيق' في هذا السيرفر. تأكد من إعطائه الصلاحية."}
+    except Exception as e:
+        return {"error": f"❌ فشل جلب سجل التدقيق: {str(e)}"}
+
+    return {"audit_log": entries, "count": len(entries)}
 
 async def tool_get_invites(guild: discord.Guild) -> dict:
     """يعرض دعوات السيرفر النشطة مع الاستخدامات والانتهاء."""
