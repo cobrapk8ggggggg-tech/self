@@ -868,52 +868,52 @@ async def tool_execute(
          elif a == "clear_channel":
             target_ch = channel
             if params.get("channel"):
-        found = _find_channel(guild, str(params["channel"]))
-        if found and isinstance(found, discord.TextChannel):
-            target_ch = found
-    if target_ch is None:
-        return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
-    limit = int(params.get("limit", 100))
-    before_msg = None
-    if params.get("before"):
-        try:
-            before_id = int(params["before"])
-            before_msg = await target_ch.fetch_message(before_id)
-        except:
-            pass
-    check = None
-    if before_msg:
-        check = lambda m: m.id < before_msg.id  # أقدم من الرسالة المرجعية
-    deleted = await target_ch.purge(limit=min(limit, 500), check=check)
-    return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None:
+                return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
+            limit = int(params.get("limit", 100))
+            before_msg = None
+            if params.get("before"):
+                try:
+                    before_id = int(params["before"])
+                    before_msg = await target_ch.fetch_message(before_id)
+                except:
+                    pass
+            check = None
+            if before_msg:
+                check = lambda m: m.id < before_msg.id  # أقدم من الرسالة المرجعية
+            deleted = await target_ch.purge(limit=min(limit, 500), check=check)
+            return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة من **{target_ch.name}**"}
 
-         elif a == "delete_member_messages":
-    member = _find_member(guild, str(params["member"]))
-    if not member:
-        return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
-    target_ch = channel
-    if params.get("channel"):
-        found = _find_channel(guild, str(params["channel"]))
-        if found and isinstance(found, discord.TextChannel):
-            target_ch = found
-    if target_ch is None:
-        return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
-    limit = int(params.get("limit", 100))
-    before_msg = None
-    if params.get("before"):
-        try:
-            before_id = int(params["before"])
-            before_msg = await target_ch.fetch_message(before_id)
-        except:
-            pass
-    def check(m):
-        ok = m.author.id == member.id
-        if before_msg:
-            ok = ok and m.id < before_msg.id
-        return ok
-    deleted = await target_ch.purge(limit=min(limit, 500), check=check)
-    return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة للعضو **{member.display_name}**"}
-
+        elif a == "delete_member_messages":
+            member = _find_member(guild, str(params["member"]))
+            if not member:
+                return {"ok": False, "msg": f"❌ ما لقيت العضو: **{params['member']}**"}
+            target_ch = channel
+            if params.get("channel"):
+                found = _find_channel(guild, str(params["channel"]))
+                if found and isinstance(found, discord.TextChannel):
+                    target_ch = found
+            if target_ch is None:
+                return {"ok": False, "msg": "❌ حدد القناة (channel) صراحة عند العمل على سيرفر آخر."}
+            limit = int(params.get("limit", 100))
+            before_msg = None
+            if params.get("before"):
+                try:
+                    before_id = int(params["before"])
+                    before_msg = await target_ch.fetch_message(before_id)
+                except:
+                    pass
+            def check(m):
+                ok = m.author.id == member.id
+                if before_msg:
+                    ok = ok and m.id < before_msg.id
+                return ok
+            deleted = await target_ch.purge(limit=min(limit, 500), check=check)
+            return {"ok": True, "msg": f"✅ تم حذف **{len(deleted)}** رسالة للعضو **{member.display_name}**"}
+            
         elif a == "create_role":
             try:
                 color = discord.Colour.from_str(params.get("color", "#99AAB5"))
