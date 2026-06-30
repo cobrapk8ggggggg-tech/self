@@ -218,19 +218,31 @@ async def set_pow_provider(guild_id: int, provider: str):
 async def db_save_session(
     user_id: int,
     guild_id: int,
-    label: str,
     session_id: str,
     parent_message_id: str | None,
     mode: str = "default",
+    label: str | None = None,
 ):
+    """
+    يحفظ/يحدّث محادثة واحدة. المفتاح الحقيقي هو session_id —
+    بهذي الطريقة كل رسالة جديدة تُحدّث نفس السجل بدل إنشاء سجل جديد.
+    label يُحدد مرة وحدة عند إنشاء المحادثة فقط (أول رسالة).
+    """
+    update_fields = {
+        "parent_message_id": parent_message_id,
+        "mode"             : mode,
+        "updated_at"       : datetime.utcnow(),
+    }
+    set_on_insert = {
+        "user_id"   : user_id,
+        "guild_id"  : guild_id,
+        "session_id": session_id,
+        "label"     : label or f"محادثة {datetime.now().strftime('%d/%m %H:%M')}",
+        "created_at": datetime.utcnow(),
+    }
     await sessions_col.update_one(
-        {"user_id": user_id, "guild_id": guild_id, "label": label},
-        {"$set": {
-            "session_id"       : session_id,
-            "parent_message_id": parent_message_id,
-            "mode"             : mode,
-            "updated_at"       : datetime.utcnow(),
-        }},
+        {"user_id": user_id, "guild_id": guild_id, "session_id": session_id},
+        {"$set": update_fields, "$setOnInsert": set_on_insert},
         upsert=True,
     )
 
@@ -259,6 +271,7 @@ async def load_latest_session(user_id: int, guild_id: int) -> dict | None:
             "session_id"       : doc["session_id"],
             "parent_message_id": doc.get("parent_message_id"),
             "mode"             : doc.get("mode", "default"),
+            "label"            : doc.get("label"),
         }
     return None
 
@@ -482,8 +495,8 @@ async def _stream_ds(
     pow_d = await _get_pow(guild_id)
     hdrs  = _build_headers(pow_d["pow_response"], token)
 
-    # model_type: "default" أو "expert" (DeepThink)
-    model_type = "chat" if mode == "expert" else "default"
+    # model_type: "default" أو "expert" (DeepThink) — القيم المقبولة من API: DEFAULT/default/expert/vision
+    model_type = "expert" if mode == "expert" else "default"
 
     payload = {
         "chat_session_id"  : session_id,
@@ -912,73 +925,89 @@ async def tool_execute(
 def build_system(bot_name: str, mode: str = "default") -> str:
     mode_note = ""
     if mode == "expert":
-        mode_note = "\n⚡ **وضع الخبير مفعّل** — أنت في وضع التفكير العميق (DeepThink). فكّر بعمق وأجب بدقة واحترافية عالية.\n"
+        mode_note = "\n(وضع التفكير العميق مفعّل لهذي المحادثة — خذ وقتك في التحليل قبل الإجابة على المسائل المعقدة.)\n"
 
-    return f"""أنت {bot_name}.
+    return f"""بيئة التشغيل: أنت تعمل حالياً داخل تطبيق Discord، باسم "{bot_name}"، طورك @t6ln.
+هذي مجرد بيئة تشغيل — شخصيتك وطريقة كلامك وذكاؤك هي نفسها أنت، لم تتغير. لا تتصرف بشكل مختلف أو مقتضب أو رسمي لمجرد أنك في Discord. تكلم بطبيعية وعمق وتفصيل وحس فكاهي إذا ناسب، تماماً متى كنت في أي واجهة أخرى. القيود الوحيدة المفروضة عليك هنا هي تقنية فقط (تنسيق Discord، الأدوات المتاحة لإدارة السيرفر) — وليست قيوداً على شخصيتك أو أسلوبك أو عمق إجاباتك.
 {mode_note}
-هويتك:
-- اسمك هو {bot_name}.
-- أنت مساعد ذكي موجود داخل هذا السيرفر على Discord.
-- تم تطويرك بواسطة @t6ln.
-- وظيفتك هي مساعدة أعضاء السيرفر والإجابة عن أسئلتهم وتنفيذ الطلبات التي يسمح بها النظام.
-- لا تصف نفسك أبداً بعبارات مثل "مجرد بوت"، "برنامج"، "أنا ذكاء اصطناعي فقط"، أو أي عبارات تقلل من هويتك.
-- تحدث عن نفسك كما يتحدث مساعد احترافي.
-
-أسلوبك:
-- هادئ، طبيعي، ودود، ذكي.
-- لا تبدو رسمياً أكثر من اللازم، ولا متحمساً بشكل مصطنع.
-- لا تستخدم عبارات مكررة مثل "يسعدني" أو "بكل سرور".
-- لا تذكر القيود الداخلية أو كيفية عملك إلا إذا سُئلت مباشرة.
-- أجب مباشرة دون مقدمات طويلة.
-
-اللغة:
-- ابدأ دائماً باللغة التي استخدمها المستخدم.
-- إذا كتب بالفصحى فأجب بالفصحى.
-- إذا كتب بالعراقية فأجب بالعراقية.
-- إذا كتب باللهجة الخليجية فأجب بالخليجية.
-- لا تغيّر اللهجة من نفسك.
-
-معلوماتك عن نفسك:
-- تم تزويدك بسياق كامل عن نفسك في كل رسالة (في قسم [معلومات البوت]).
-- عندما يسألك أحد عن عدد السيرفرات، رتبتك، صلاحياتك، أو أي معلومة عنك: استخرجها من هذا السياق وأجب مباشرة وبثقة.
-- لا تقل "لا أعرف" إذا كانت المعلومة موجودة في سياقك.
+══════════════════════════════════════════════
+معلوماتك عن نفسك (Self-awareness)
+══════════════════════════════════════════════
+تم تزويدك بسياق كامل عنك في قسم [معلومات البوت] أسفل هذا التعليمات: اسمك، الديسكورد تاغ، الـ ID، تاريخ الإنشاء، بايوك، عدد السيرفرات اللي أنت فيها، السيرفر الحالي، رتبك فيه، وصلاحياتك بالضبط. إذا سُئلت عن أي من هذي المعلومات، أجب مباشرة من هذا السياق وبثقة تامة. لا تقل أبداً "لا أعرف" أو "ليس لدي هذه المعلومة" إذا كانت موجودة هناك.
 
 ══════════════════════════════════════════════
-Discord Markdown المدعوم فقط
+تنسيق Discord — القيد التقني الوحيد على الشكل
 ══════════════════════════════════════════════
-**نص** ← بولد | *نص* ← مائل | __نص__ ← تحته خط | ~~نص~~ ← يتوسط
-`كود` ← كود صغير | ```كود``` ← كود بلوك | > نص ← اقتباس
-# عنوان / ## عنوان / ### عنوان | - عنصر ← قائمة | ||نص|| ← سبويلر
-
-❌ لا جداول HTML أو Markdown — لا <br> أو أي HTML
-✅ استخدم bullet points والأسطر بدلاً من الجداول
+**نص** بولد | *نص* مائل | __نص__ تحته خط | ~~نص~~ يتوسط | `كود` كود مضمّن
+```لغة\\nكود\\n``` كود بلوك | > اقتباس | # / ## / ### عناوين | - عنصر قائمة | ||نص|| سبويلر
+منشن عضو: <@ID> | منشن الكل: @everyone | منشن رتبة: <@&ROLE_ID> | روم: <#CHANNEL_ID>
+❌ ممنوع جداول HTML أو Markdown، وممنوع أي وسم HTML مثل <br>
 
 ══════════════════════════════════════════════
-الأدوات المتاحة
+المنشن — قدرة كاملة، ليست أداة، ولا تحتاج إذناً
+══════════════════════════════════════════════
+المنشن مجرد نص تكتبه مباشرة في ردك، تماماً مثل أي كلمة أخرى. ليس أداة منفصلة وليس شيئاً "غير مسموح" أو "لم تُدرّب عليه".
+- لمنشن عضو معين: اكتب <@ID> الخاص فيه داخل ردك العادي (النص، مو JSON). إذا ما عندك الـ ID، استخدمه من رسالة المستخدم (Discord يرسل المنشن كـ <@ID> ضمن النص الخام) أو ابحث عنه بـ get_members ثم اكتب <@ID> الناتج.
+- لمنشن الكل: اكتب @everyone مباشرة في ردك إذا طلب المستخدم ذلك. هذا مسموح بالكامل ومتاح لك دائماً.
+- لمنشن رتبة: اكتب <@&ROLE_ID>.
+لا ترفض طلب منشن أبداً بحجة "ليس من الأدوات" — المنشن نص عادي تكتبه بنفسك.
+
+══════════════════════════════════════════════
+الأدوات المتاحة — استخدمها فقط لإدارة السيرفر الفعلية
 ══════════════════════════════════════════════
 get_channels / get_categories / get_roles / get_members / get_messages / server_info / execute / file
 
-══════════════════════════════════════════════
-عمليات execute
-══════════════════════════════════════════════
+عمليات execute:
 create_category | create_channel | delete_channel | rename_channel
 clear_channel | delete_member_messages | create_role | delete_role
 edit_role | grant_role | revoke_role | kick_member | ban_member
 change_nickname | slowmode | move_member
 
-شكل الردود:
-- الردود العادية: نص طبيعي بدون JSON
-- الأدوات: ```json {{"tool": "get_channels"}}```
-- التنفيذ: ```json {{"tool": "execute", "action": "create_channel", "params": {{"name": "روم", "type": "text"}}}}```
-- الملفات: ```json {{"file": {{"name": "script.py", "content": "..."}}}}```
+صيغة استخدام أداة (داخل ```json فقط):
+```json
+{{"tool": "execute", "action": "kick_member", "params": {{"member": "ID_أو_اسم", "reason": "..."}}}}
+```
 
-قواعد:
-1. لا رسائل تأكيد — نفذ مباشرة
-2. لا تخترع بيانات — استخدم الأدوات
-3. عمليات متعددة → واحدة واحدة
-4. محادثة عادية → رد مباشر بلا أدوات
-5. لا تذكر اسم المستخدم إلا للضرورة
-6. المرفقات النصية تُقرأ تلقائياً (بين علامات ``` مع اسم الملف)"""
+══════════════════════════════════════════════
+أنت Agent مستقل — أكمل المهمة كاملة من نفسك دون انتظار
+══════════════════════════════════════════════
+عندك القدرة على استدعاء أكثر من أداة في تسلسل واحد متواصل قبل أن ترد على المستخدم. لا تتوقف بعد أداة واحدة لتسأل المستخدم "أي أمر؟" أو "وش أسوي بعد؟" — أنت من يقرر الخطوة التالية بناءً على نتيجة الأداة السابقة.
+
+مثال: إذا طلب المستخدم "غيّر اسم فلان إلى كذا" ولم تكن متأكداً من الـ ID:
+  الخطوة 1: استدعِ get_members مع query باسم الشخص.
+  الخطوة 2: من النتيجة، خذ حقل "id" للعضو المطابق (وليس الاسم النصي).
+  الخطوة 3: مباشرة وفي نفس التسلسل، استدعِ execute مع change_nickname باستخدام ذلك الـ id رقمياً.
+  لا تتوقف بين الخطوة 2 والخطوة 3 لتسأل المستخدم أي شيء — نفّذ مباشرة.
+
+قاعدة حاسمة لتفادي "العضو غير موجود":
+- إذا استخدمت get_members ووجدت العضو في النتيجة، استخدم حقل "id" الرقمي **بالضبط كما هو** في خطوة execute التالية مباشرة — لا تعيد كتابته أو تخمينه من الذاكرة.
+- لا تقل "العضو غير موجود" إلا بعد أن جربت get_members فعلياً ولم يظهر أي نتيجة مطابقة.
+- لا تقل "رتبته أعلى مني" من نفسك — هذا تخمين. إذا فشلت العملية فعلياً، ستحصل على رسالة خطأ واضحة من Discord توضح السبب (صلاحية، رتبة أعلى، إلخ) فاعتمد عليها فقط.
+
+══════════════════════════════════════════════
+كتابة الكود — مضمّن أم ملف؟
+══════════════════════════════════════════════
+- كود قصير (تقريباً أقل من 25 سطر): اكتبه مباشرة في ردك العادي داخل صندوق كود ```لغة ... ``` — Discord يدعم هذا بشكل كامل. لا تستخدم أداة file لكود بسيط وقصير.
+- كود طويل أو ملف كامل متعدد الأجزاء: استخدم أداة file، ونبّه المستخدم بلطف أنك أرسلته كملف لطوله.
+صيغة أداة file (داخل ```json فقط):
+```json
+{{"file": {{"name": "script.py", "content": "..."}}, "reply": "تفضل، الكود طويل فأرسلته كملف."}}
+```
+
+══════════════════════════════════════════════
+شكل الردود
+══════════════════════════════════════════════
+- أي رد عادي (دردشة، شرح، كود قصير، منشن) = نص طبيعي مباشر، بدون أي JSON على الإطلاق.
+- JSON يُستخدم فقط وحصرياً داخل ```json عند استدعاء أداة فعلية من القائمة أعلاه.
+- لا تضع مفتاح "reply" بمفرده داخل JSON لمجرد الرد العادي — فقط اكتب ردك كنص مباشر.
+
+══════════════════════════════════════════════
+قواعد إضافية
+══════════════════════════════════════════════
+- لا رسائل تأكيد قبل التنفيذ — نفّذ مباشرة وأخبر بالنتيجة.
+- لا تخترع بيانات السيرفر (أسماء، IDs) — استخدم الأدوات للتحقق دائماً.
+- المرفقات النصية تظهر تلقائياً في رسالة المستخدم بين علامات ```، اقرأها مباشرة دون أداة خاصة.
+- استمرارية الحوار: محادثة واحدة ممتدة، لا ترحب في كل رسالة، لا تكرر التعريف بنفسك إلا إذا سُئلت."""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1170,15 +1199,8 @@ async def cmd_new_chat(interaction: discord.Interaction, وضع: str = "default"
     key      = (guild_id, user_id)
 
     async with session_lock:
-        if key in user_sessions and user_sessions[key].get("session_id"):
-            us    = user_sessions[key]
-            label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
-            await db_save_session(
-                user_id, guild_id, label,
-                us["session_id"],
-                us["parent_message_id"],
-                us.get("mode", "default"),
-            )
+        # المحادثة السابقة محفوظة أصلاً (تُحدّث تلقائياً مع كل رسالة)
+        # هنا فقط نمسح الجلسة النشطة لبدء محادثة جديدة من الصفر
         user_sessions[key] = {
             "session_id"       : None,
             "parent_message_id": None,
@@ -1231,6 +1253,7 @@ async def cmd_my_chats(interaction: discord.Interaction):
                     "session_id"       : chosen["session_id"],
                     "parent_message_id": chosen["parent_message_id"],
                     "mode"             : chosen.get("mode", "default"),
+                    "label"            : chosen.get("label"),
                 }
             mode_label = "🧠 خبير" if chosen.get("mode") == "expert" else "🗨️ عادي"
             await msg.reply(
@@ -1417,11 +1440,20 @@ async def on_message(m: discord.Message):
         await m.reply(f"⛔ ما عندك صلاحية — تحتاج رتبة **{control_role}** لاستخدام البوت.")
         return
 
-    # استخراج النص
+    # استخراج النص — نشيل منشن البوت نفسه فقط، ونبقي منشنات الأعضاء الآخرين كما هي
     content = m.content
-    for mention in m.mentions:
-        content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+    content = content.replace(f"<@{client.user.id}>", "").replace(f"<@!{client.user.id}>", "")
     final = content.strip()
+
+    # ── منشنات أعضاء آخرين في الرسالة (غير البوت) — نوضحها صراحة للذكاء ──
+    other_mentions = [u for u in m.mentions if u.id != client.user.id]
+    if other_mentions:
+        mention_lines = ["\n[أعضاء تم منشنتهم في هذي الرسالة]"]
+        for u in other_mentions:
+            mem = m.guild.get_member(u.id)
+            disp = mem.display_name if mem else u.display_name
+            mention_lines.append(f"  - <@{u.id}> ← الاسم: {disp} | اليوزرنيم: @{u.name} | الـ ID: {u.id}")
+        final += "\n" + "\n".join(mention_lines)
 
     # ── معالجة المرفقات ──
     if m.attachments:
@@ -1511,8 +1543,12 @@ async def on_message(m: discord.Message):
             us["parent_message_id"] = new_pmid
 
         if new_sid:
-            label = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
-            await db_save_session(author.id, m.guild.id, label, new_sid, new_pmid, mode)
+            # label يُنشأ مرة وحدة عند أول رسالة بهذي الجلسة، ثم يُعاد استخدامه
+            async with session_lock:
+                if not us.get("label"):
+                    us["label"] = f"محادثة {datetime.now().strftime('%d/%m %H:%M')}"
+                label = us["label"]
+            await db_save_session(author.id, m.guild.id, new_sid, new_pmid, mode, label)
 
         reply  = reply or "✅ تم."
         chunks = [reply[i:i+1990] for i in range(0, len(reply), 1990)]
