@@ -1298,120 +1298,145 @@ async def run_agent(
 
         print(f"  raw: {raw[:300]}")
 
-        parsed = None
-        json_match = re.search(r"```json\s*([\s\S]*?)```", raw)
-        if json_match:
+        # ── استخراج جميع أوامر JSON من الرد ──
+        json_blocks = re.findall(r"```json\s*([\s\S]*?)```", raw)
+        
+        parsed_list = []
+        for block in json_blocks:
             try:
-                parsed = json.loads(json_match.group(1))
+                parsed = json.loads(block)
+                if isinstance(parsed, dict):
+                    parsed_list.append(parsed)
             except Exception:
                 pass
 
-        if parsed is None:
-            m = re.search(r"\{[\s\S]*\}", raw)
-            if m:
+        # لو ما لقينا أي JSON، ممكن يكون الرد النهائي
+        if not parsed_list:
+            # نتحقق من وجود file مباشر (الصيغة المختصرة)
+            if '"file"' in raw or '"name"' in raw:
                 try:
-                    parsed = json.loads(m.group())
+                    m = re.search(r'\{[\s\S]*"file"[\s\S]*\}', raw)
+                    if m:
+                        parsed = json.loads(m.group())
+                        if "file" in parsed:
+                            parsed_list.append(parsed)
                 except Exception:
                     pass
+            
+            # إذا ما زال فارغاً، فهو رد نصي عادي
+            if not parsed_list:
+                return raw, cur_sid, cur_pmid, []
 
-        if parsed is None:
-            return raw, cur_sid, cur_pmid, []
+        # ── تنفيذ جميع الأدوات وتجميع النتائج ──
+        all_results = []
+        files_to_send = []
+        final_reply = None
 
-        # ── file (صيغة مباشرة) ──
-        if "file" in parsed:
-            file_info = parsed["file"]
-            if isinstance(file_info, dict) and "name" in file_info and "content" in file_info:
-                safe_name = os.path.basename(file_info["name"]) or "output.txt"
-                content   = str(file_info["content"])
-                try:
-                    tmp = tempfile.NamedTemporaryFile(
-                        mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
-                    )
-                    tmp.write(content)
-                    tmp.close()
-                    reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
-                    return reply_text, cur_sid, cur_pmid, [tmp.name]
-                except Exception as e:
-                    return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
+        for parsed in parsed_list:
+            # هل فيه reply؟
+            if "reply" in parsed and "tool" not in parsed and "file" not in parsed:
+                final_reply = parsed["reply"]
+                continue
 
-        # ── tool: file ──
-        if parsed.get("tool") == "file":
-            params = parsed.get("params", {})
-            if isinstance(params, dict) and "name" in params and "content" in params:
-                safe_name = os.path.basename(params["name"]) or "output.txt"
-                content   = str(params["content"])
-                try:
-                    tmp = tempfile.NamedTemporaryFile(
-                        mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
-                    )
-                    tmp.write(content)
-                    tmp.close()
-                    reply_text = parsed.get("reply", "✅ تم إنشاء الملف.")
-                    return reply_text, cur_sid, cur_pmid, [tmp.name]
-                except Exception as e:
-                    return f"⚠️ خطأ أثناء إنشاء الملف: {e}", cur_sid, cur_pmid, []
+            # ── file (صيغة مختصرة) ──
+            if "file" in parsed:
+                file_info = parsed["file"]
+                if isinstance(file_info, dict) and "name" in file_info and "content" in file_info:
+                    safe_name = os.path.basename(file_info["name"]) or "output.txt"
+                    content   = str(file_info["content"])
+                    try:
+                        tmp = tempfile.NamedTemporaryFile(
+                            mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
+                        )
+                        tmp.write(content)
+                        tmp.close()
+                        files_to_send.append(tmp.name)
+                        all_results.append(f"[FILE_CREATED: {safe_name}]")
+                        if "reply" in parsed:
+                            final_reply = parsed["reply"]
+                    except Exception as e:
+                        all_results.append(f"[FILE_ERROR: {e}]")
+                continue
 
-        # ── reply فقط ──
-        if "reply" in parsed:
-            return parsed["reply"], cur_sid, cur_pmid, []
+            tool = parsed.get("tool", "")
+            if not tool:
+                continue
 
-        tool = parsed.get("tool", "")
-        if not tool:
-            return raw, cur_sid, cur_pmid, []
+            # ── tool: file ──
+            if tool == "file":
+                params = parsed.get("params", {})
+                if isinstance(params, dict) and "name" in params and "content" in params:
+                    safe_name = os.path.basename(params["name"]) or "output.txt"
+                    content   = str(params["content"])
+                    try:
+                        tmp = tempfile.NamedTemporaryFile(
+                            mode='w', suffix='_' + safe_name, delete=False, encoding='utf-8'
+                        )
+                        tmp.write(content)
+                        tmp.close()
+                        files_to_send.append(tmp.name)
+                        all_results.append(f"[FILE_CREATED: {safe_name}]")
+                        if "reply" in parsed:
+                            final_reply = parsed["reply"]
+                    except Exception as e:
+                        all_results.append(f"[FILE_ERROR: {e}]")
+                continue
 
-        result: dict = {}
+            # ── الأدوات القرائية (تدعم target_guild) ──
+            result: dict = {}
+            read_params  = parsed.get("params") or {}
+            target_guild = guild
+            if read_params.get("target_guild"):
+                found_g = _find_guild(str(read_params["target_guild"]))
+                if found_g:
+                    target_guild = found_g
+                else:
+                    result = {"error": f"ما لقيت سيرفر: {read_params['target_guild']}"}
+                    all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
+                    continue
 
-        # دعم التوجيه لأي سيرفر آخر للأدوات القرائية أيضاً (وعي شامل خارج السيرفر الحالي)
-        read_params  = parsed.get("params") or {}
-        target_guild = guild
-        if read_params.get("target_guild"):
-            found_g = _find_guild(str(read_params["target_guild"]))
-            if found_g:
-                target_guild = found_g
+            if tool == "get_channels":
+                result = tool_get_channels(target_guild)
+            elif tool == "get_categories":
+                result = tool_get_categories(target_guild)
+            elif tool == "get_roles":
+                result = tool_get_roles(target_guild)
+            elif tool == "get_members":
+                query  = read_params.get("query")
+                result = tool_get_members(target_guild, query)
+            elif tool == "server_info":
+                result = tool_server_info(target_guild)
+            elif tool == "list_all_guilds":
+                result = tool_list_all_guilds()
+            elif tool == "get_messages":
+                limit     = int(read_params.get("limit", 100))
+                member_id = read_params.get("member_id")
+                target_ch = channel
+                if read_params.get("channel"):
+                    found_ch = _find_channel(target_guild, str(read_params["channel"]))
+                    if found_ch and isinstance(found_ch, discord.TextChannel):
+                        target_ch = found_ch
+                if isinstance(target_ch, discord.TextChannel):
+                    result = await tool_get_messages(target_ch, limit, member_id)
+                else:
+                    result = {"error": "حدد قناة نصية صحيحة (channel) لقراءة رسائلها"}
+            elif tool == "execute":
+                action = parsed.get("action", "")
+                params = parsed.get("params", {})
+                result = await tool_execute(guild, channel, action, params)
             else:
-                result = {"error": f"ما لقيت سيرفر: {read_params['target_guild']}"}
+                result = {"error": f"أداة غير معروفة: {tool}"}
 
-        if result:
-            pass
-        elif tool == "get_channels":
-            result = tool_get_channels(target_guild)
-        elif tool == "get_categories":
-            result = tool_get_categories(target_guild)
-        elif tool == "get_roles":
-            result = tool_get_roles(target_guild)
-        elif tool == "get_members":
-            query  = read_params.get("query")
-            result = tool_get_members(target_guild, query)
-        elif tool == "server_info":
-            result = tool_server_info(target_guild)
-        elif tool == "list_all_guilds":
-            result = tool_list_all_guilds()
-        elif tool == "get_messages":
-            limit     = int(read_params.get("limit", 100))
-            member_id = read_params.get("member_id")
-            target_ch = channel
-            if read_params.get("channel"):
-                found_ch = _find_channel(target_guild, str(read_params["channel"]))
-                if found_ch and isinstance(found_ch, discord.TextChannel):
-                    target_ch = found_ch
-            if isinstance(target_ch, discord.TextChannel):
-                result = await tool_get_messages(target_ch, limit, member_id)
-            else:
-                result = {"error": "حدد قناة نصية صحيحة (channel) لقراءة رسائلها"}
-        elif tool == "execute":
-            action = parsed.get("action", "")
-            params = parsed.get("params", {})
-            result = await tool_execute(guild, channel, action, params)
-        else:
-            result = {"error": f"أداة غير معروفة: {tool}"}
+            all_results.append(f"[TOOL_RESULT: {tool}]\n{json.dumps(result, ensure_ascii=False)}")
+            print(f"  tool='{tool}' → {str(result)[:200]}")
 
-        print(f"  tool='{tool}' → {str(result)[:200]}")
+        # إذا كان فيه رد نهائي، نرسله فوراً
+        if final_reply:
+            return final_reply, cur_sid, cur_pmid, files_to_send
 
-        cur_prompt = (
-            f"[TOOL_RESULT: {tool}]\n"
-            f"{json.dumps(result, ensure_ascii=False)}\n\n"
-            f"استكمل."
-        )
+        # وإلا، نرسل النتائج المجمعة للنموذج ليكمل
+        combined = "\n".join(all_results)
+        cur_prompt = f"تم تنفيذ الأوامر التالية:\n{combined}\n\nاستكمل."
 
     return "✅ تم.", cur_sid, cur_pmid, []
 
