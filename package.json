@@ -1,0 +1,19 @@
+{
+  "name": "zeus-bot",
+  "version": "7.0.0",
+  "description": "Disor Bot v7.0 Ironclad — Discord Bot (Node.js port)",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "mongodb": "^6.10.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
