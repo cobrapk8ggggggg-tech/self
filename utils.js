@@ -70,10 +70,10 @@ function is_text_attachment(attachment) {
 /**
  * يحفظ جلسة القناة في MongoDB
  */
-async function db_save_channel_session(guild_id, channel_id, session_id, parent_message_id, mode = 'default', thinking = false) {
+async function db_save_channel_session(guild_id, channel_id, session_id, parent_message_id, mode = 'default', thinking = false, agent_id = 'default') {
     const cfg = require('./config');
     await cfg.sessions_col.updateOne(
-        { guild_id: String(guild_id), channel_id: String(channel_id) },
+        { agent_id: String(agent_id), guild_id: String(guild_id), channel_id: String(channel_id) },
         {
             $set: {
                 session_id        : session_id,
@@ -94,9 +94,10 @@ async function db_save_channel_session(guild_id, channel_id, session_id, parent_
  * يحمّل جلسة القناة من MongoDB
  * @returns {Promise<{session_id: string, parent_message_id: string|null, mode: string, thinking: boolean}|null>}
  */
-async function db_load_channel_session(guild_id, channel_id) {
+async function db_load_channel_session(guild_id, channel_id, agent_id = 'default') {
     const cfg = require('./config');
     const doc = await cfg.sessions_col.findOne({
+        agent_id  : String(agent_id),
         guild_id  : String(guild_id),
         channel_id: String(channel_id),
     });
@@ -114,9 +115,10 @@ async function db_load_channel_session(guild_id, channel_id) {
 /**
  * يحذف جلسة القناة من MongoDB (إعادة تعيين)
  */
-async function db_reset_channel_session(guild_id, channel_id) {
+async function db_reset_channel_session(guild_id, channel_id, agent_id = 'default') {
     const cfg = require('./config');
     await cfg.sessions_col.deleteOne({
+        agent_id  : String(agent_id),
         guild_id  : String(guild_id),
         channel_id: String(channel_id),
     });
@@ -131,15 +133,15 @@ async function db_reset_channel_session(guild_id, channel_id) {
  * @param {string} guildId
  * @returns {Promise<string[]>}
  */
-async function get_allowed_channels(guildId) {
-    const key = String(guildId);
-    if (allowed_channels_cache.has(key)) {
-        return allowed_channels_cache.get(key);
+async function get_allowed_channels(guildId, agent_id = 'default', cache = allowed_channels_cache) {
+    const key = `${agent_id}:${String(guildId)}`;
+    if (cache.has(key)) {
+        return cache.get(key);
     }
     const cfg = require('./config');
-    const doc = await cfg.channels_col.findOne({ guild_id: key });
+    const doc = await cfg.channels_col.findOne({ agent_id: String(agent_id), guild_id: String(guildId) });
     const ids = (doc && Array.isArray(doc.channel_ids)) ? doc.channel_ids.map(String) : [];
-    allowed_channels_cache.set(key, ids);
+    cache.set(key, ids);
     return ids;
 }
 
@@ -149,20 +151,20 @@ async function get_allowed_channels(guildId) {
  * @param {string} channelId
  * @returns {Promise<boolean>} true عند النجاح
  */
-async function add_allowed_channel(guildId, channelId) {
-    const key = String(guildId);
+async function add_allowed_channel(guildId, channelId, agent_id = 'default', cache = allowed_channels_cache) {
+    const key = `${agent_id}:${String(guildId)}`;
     const cid = String(channelId);
-    const ids = await get_allowed_channels(key);
+    const ids = await get_allowed_channels(guildId, agent_id, cache);
 
     if (ids.includes(cid)) return true;          // موجودة أصلاً
     if (ids.length >= MAX_CHANNELS_PER_GUILD) return false; // تجاوز الحد
 
     ids.push(cid);
-    allowed_channels_cache.set(key, ids);
+    cache.set(key, ids);
 
     const cfg = require('./config');
     await cfg.channels_col.updateOne(
-        { guild_id: key },
+        { agent_id: String(agent_id), guild_id: String(guildId) },
         { $addToSet: { channel_ids: cid } },
         { upsert: true },
     );
@@ -174,17 +176,17 @@ async function add_allowed_channel(guildId, channelId) {
  * @param {string} guildId
  * @param {string} channelId
  */
-async function remove_allowed_channel(guildId, channelId) {
-    const key = String(guildId);
+async function remove_allowed_channel(guildId, channelId, agent_id = 'default', cache = allowed_channels_cache) {
+    const key = `${agent_id}:${String(guildId)}`;
     const cid = String(channelId);
-    const ids = await get_allowed_channels(key);
+    const ids = await get_allowed_channels(guildId, agent_id, cache);
     const idx = ids.indexOf(cid);
     if (idx !== -1) ids.splice(idx, 1);
-    allowed_channels_cache.set(key, ids);
+    cache.set(key, ids);
 
     const cfg = require('./config');
     await cfg.channels_col.updateOne(
-        { guild_id: key },
+        { agent_id: String(agent_id), guild_id: String(guildId) },
         { $pull: { channel_ids: cid } },
     );
 }
@@ -198,9 +200,9 @@ async function remove_allowed_channel(guildId, channelId) {
  * @param {string} guildId
  * @returns {Promise<string>}
  */
-async function get_control_role(guildId) {
+async function get_control_role(guildId, agent_id = 'default') {
     const cfg = require('./config');
-    const doc = await cfg.settings_col.findOne({ guild_id: String(guildId) });
+    const doc = await cfg.settings_col.findOne({ agent_id: String(agent_id), guild_id: String(guildId) });
     if (doc && doc.control_role) return doc.control_role;
     return cfg.CONTROL_ROLE_NAME || '';
 }
@@ -210,10 +212,10 @@ async function get_control_role(guildId) {
  * @param {string} guildId
  * @param {string} roleName
  */
-async function set_control_role(guildId, roleName) {
+async function set_control_role(guildId, roleName, agent_id = 'default') {
     const cfg = require('./config');
     await cfg.settings_col.updateOne(
-        { guild_id: String(guildId) },
+        { agent_id: String(agent_id), guild_id: String(guildId) },
         { $set: { control_role: roleName } },
         { upsert: true },
     );
@@ -228,9 +230,9 @@ async function set_control_role(guildId, roleName) {
  * @param {string} guildId
  * @returns {Promise<string>}
  */
-async function get_pow_provider(guildId) {
+async function get_pow_provider(guildId, agent_id = 'default') {
     const cfg = require('./config');
-    const doc = await cfg.settings_col.findOne({ guild_id: String(guildId) });
+    const doc = await cfg.settings_col.findOne({ agent_id: String(agent_id), guild_id: String(guildId) });
     if (doc && doc.pow_provider) return doc.pow_provider;
     return DEFAULT_POW_PROVIDER;
 }
@@ -240,13 +242,13 @@ async function get_pow_provider(guildId) {
  * @param {string} guildId
  * @param {string} provider - 'railway' أو 'telegram'
  */
-async function set_pow_provider(guildId, provider) {
+async function set_pow_provider(guildId, provider, agent_id = 'default') {
     if (!['railway', 'telegram'].includes(provider)) {
         throw new Error("provider must be 'railway' or 'telegram'");
     }
     const cfg = require('./config');
     await cfg.settings_col.updateOne(
-        { guild_id: String(guildId) },
+        { agent_id: String(agent_id), guild_id: String(guildId) },
         { $set: { pow_provider: provider } },
         { upsert: true },
     );
@@ -532,9 +534,8 @@ function _build_headers(powResponse, token) {
  * @param {string} guildId
  * @returns {Promise<{pow_response: string, pow_data: any}>}
  */
-async function _get_pow(guildId) {
-    const token    = DEEPSEEK_TOKEN;
-    const provider = await get_pow_provider(guildId);
+async function _get_pow(guildId, token = DEEPSEEK_TOKEN, agent_id = 'default') {
+    const provider = await get_pow_provider(guildId, agent_id);
 
     if (provider === 'telegram') {
         const encodedToken = encodeURIComponent(token);
@@ -572,8 +573,7 @@ async function _get_pow(guildId) {
  * ينشئ جلسة DeepSeek جديدة
  * @returns {Promise<string>} session_id
  */
-async function _new_ds_session() {
-    const token = DEEPSEEK_TOKEN;
+async function _new_ds_session(token = DEEPSEEK_TOKEN) {
     const url   = 'https://chat.deepseek.com/api/v0/chat_session/create';
     const hdrs  = {
         'x-client-bundle-id'       : 'com.deepseek.chat',
@@ -615,13 +615,13 @@ function _strip(text) {
  * @param {boolean} thinking
  * @returns {Promise<{fullText: string, sessionId: string, newParentMessageId: string|null}>}
  */
-async function _stream_ds(prompt, guildId, sessionId = null, parentMessageId = null, mode = 'default', thinking = false) {
-    const token = DEEPSEEK_TOKEN;
+async function _stream_ds(prompt, guildId, sessionId = null, parentMessageId = null, mode = 'default', thinking = false, deepseekToken = DEEPSEEK_TOKEN, agent_id = 'default') {
+    const token = deepseekToken;
     if (!token) throw new Error('DEEPSEEK_TOKEN not set');
 
-    if (!sessionId) sessionId = await _new_ds_session();
+    if (!sessionId) sessionId = await _new_ds_session(token);
 
-    const powD = await _get_pow(guildId);
+    const powD = await _get_pow(guildId, token, agent_id);
     const hdrs = _build_headers(powD.pow_response, token);
 
     const modelType = (mode === 'expert') ? 'expert' : 'default';

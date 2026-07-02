@@ -136,8 +136,9 @@ async function runAgent(
     sessionId, parentMessageId, guildId,
     mode = 'default', thinking = false, accessLevel = 'member',
     client,
+    runtime = {},
 ) {
-    const system    = buildSystem(botName, mode, thinking, accessLevel);
+    const system    = buildSystem(botName, mode, thinking, accessLevel, runtime.personality || '');
     let curSid      = sessionId;
     let curPmid     = parentMessageId;
     let curPrompt   = (
@@ -151,7 +152,7 @@ async function runAgent(
 
         let raw;
         try {
-            const dsResult = await _stream_ds(curPrompt, guildId, curSid, curPmid, mode, thinking);
+            const dsResult = await _stream_ds(curPrompt, guildId, curSid, curPmid, mode, thinking, runtime.deepseekToken, runtime.agentId || 'default');
             raw     = dsResult.fullText;
             curSid  = dsResult.sessionId;
             curPmid = dsResult.newParentMessageId;

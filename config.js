@@ -72,6 +72,8 @@ let db           = null;
 let sessions_col = null; // جلسات القنوات (per-channel)
 let settings_col = null; // إعدادات السيرفر
 let channels_col = null; // القنوات المسموحة
+let agents_col   = null; // إعدادات الوكلاء
+let logs_col     = null; // سجلات الوكلاء
 
 /**
  * يقوم بالاتصال بـ MongoDB وتهيئة المتغيرات
@@ -83,6 +85,8 @@ async function connectMongo() {
         sessions_col = db.collection('chat_sessions');
         settings_col = db.collection('settings');
         channels_col = db.collection('allowed_channels');
+        agents_col   = db.collection('agents');
+        logs_col     = db.collection('agent_logs');
         console.log('✅ MongoDB متصل بنجاح');
     } catch (err) {
         console.error('❌ فشل الاتصال بـ MongoDB:', err.message);
@@ -165,6 +169,8 @@ module.exports = {
     get sessions_col() { return sessions_col; },
     get settings_col() { return settings_col; },
     get channels_col() { return channels_col; },
+    get agents_col()   { return agents_col; },
+    get logs_col()     { return logs_col; },
 
     // RAM Cache
     channel_sessions,
@@ -172,4 +178,5 @@ module.exports = {
 
     // Lock
     sessionLock,
+    SimpleLock,
 };
