@@ -34,11 +34,38 @@ const ICONS = Object.freeze({
     running: '🟢', stopped: '⚫', failed: '🔴', starting: '🟡', restarting: '🔄', bot: '🤖', user: '👤', back: '↩️', refresh: '🔄',
 });
 
+const DASHBOARD_COMMAND_ROUTES = Object.freeze({
+    panel: 'home',
+    'لوحة': 'home',
+    'الوكلاء': 'agents',
+    'انشاء-وكيل': 'create',
+    'الاعدادات': 'settings',
+    'الاشعارات': 'notifications',
+    'السجلات': 'logs',
+    'الاحصائيات': 'stats',
+    'النظام': 'system',
+});
+
 function dashboardCommands() {
     return [
         new SlashCommandBuilder().setName('panel').setDescription('Open the Disor AI Agents Control Center'),
         new SlashCommandBuilder().setName('لوحة').setDescription('فتح مركز تحكم وكلاء الذكاء الاصطناعي'),
+        new SlashCommandBuilder().setName('الوكلاء').setDescription('فتح صفحة إدارة الوكلاء من لوحة التحكم'),
+        new SlashCommandBuilder().setName('انشاء-وكيل').setDescription('فتح معالج إنشاء وكيل جديد من لوحة التحكم'),
+        new SlashCommandBuilder().setName('الاعدادات').setDescription('فتح إعدادات منصة الوكلاء'),
+        new SlashCommandBuilder().setName('الاشعارات').setDescription('فتح إعدادات إشعارات الوكلاء'),
+        new SlashCommandBuilder().setName('السجلات').setDescription('فتح سجلات وتايملاين النظام'),
+        new SlashCommandBuilder().setName('الاحصائيات').setDescription('فتح إحصائيات الوكلاء'),
+        new SlashCommandBuilder().setName('النظام').setDescription('فتح حالة النظام والتشغيل'),
     ];
+}
+
+function dashboardCommandRoute(commandName) {
+    return DASHBOARD_COMMAND_ROUTES[String(commandName || '')] || null;
+}
+
+function isDashboardCommand(commandName) {
+    return Boolean(dashboardCommandRoute(commandName));
 }
 
 function fmtDate(value) {
@@ -121,7 +148,7 @@ async function hasDashboardAccess(interaction) {
 
 async function requireAccess(interaction) {
     if (await hasDashboardAccess(interaction)) return true;
-    await interaction.reply({ embeds: [embed('⛔ صلاحية مرفوضة', linesBlock(['هذه لوحة إدارة مركزية ولا يمكن استخدامها إلا بواسطة المالك أو رتبة الإدارة المحددة.']), COLORS.danger)], ephemeral: true }).catch(() => {});
+    await interaction.reply({ embeds: [embed('⛔ صلاحية مرفوضة', linesBlock(['هذه لوحة إدارة مركزية ولا يمكن استخدامها إلا بواسطة المالك أو رتبة الإدارة المحددة.']), COLORS.danger)] }).catch(() => {});
     return false;
 }
 
@@ -382,20 +409,27 @@ async function renderSystem(manager) {
 }
 
 async function updateInteraction(interaction, payload) {
-    if (interaction.isChatInputCommand()) return interaction.reply({ ...payload, ephemeral: true });
+    if (interaction.isChatInputCommand()) return interaction.reply(payload);
     if (interaction.isStringSelectMenu() || interaction.isButton() || interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu()) return interaction.update(payload);
-    return interaction.reply({ ...payload, ephemeral: true });
+    return interaction.reply(payload);
 }
 
 async function handleDashboardInteraction(interaction, manager) {
-    const commandOk = interaction.isChatInputCommand?.() && ['panel', 'لوحة'].includes(interaction.commandName);
+    const commandRoute = interaction.isChatInputCommand?.() ? dashboardCommandRoute(interaction.commandName) : null;
+    const commandOk = Boolean(commandRoute);
     const componentOk = interaction.customId && interaction.customId.startsWith(`${DASH_PREFIX}:`);
     if (!commandOk && !componentOk) return false;
     if (!await requireAccess(interaction)) return true;
 
     if (commandOk) {
-        await interaction.reply({ ...(await renderHome(manager, interaction)), ephemeral: true });
-        return true;
+        if (commandRoute === 'agents') return updateInteraction(interaction, await renderAgents(manager, 0));
+        if (commandRoute === 'create') return updateInteraction(interaction, createTypeView());
+        if (commandRoute === 'settings') return updateInteraction(interaction, await renderSettings(interaction.guildId));
+        if (commandRoute === 'notifications') return updateInteraction(interaction, await renderNotifications(null, interaction.guildId));
+        if (commandRoute === 'logs') return updateInteraction(interaction, await renderLogs(null, 0));
+        if (commandRoute === 'stats') return updateInteraction(interaction, await renderStats(manager));
+        if (commandRoute === 'system') return updateInteraction(interaction, await renderSystem(manager));
+        return updateInteraction(interaction, await renderHome(manager, interaction));
     }
 
     const id = interaction.customId;
@@ -430,7 +464,7 @@ async function handleDashboardInteraction(interaction, manager) {
             token_type: type,
         });
         await manager.logAgent(String(agent._id), 'create', 'تم إنشاء وكيل من Dashboard', { token_type: type });
-        await interaction.reply({ ...(await renderAgent(manager, String(agent._id))), ephemeral: true });
+        await interaction.reply(await renderAgent(manager, String(agent._id)));
         return true;
     }
 
@@ -444,7 +478,7 @@ async function handleDashboardInteraction(interaction, manager) {
         }
         await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set });
         await manager.logAgent(agentId, 'update', 'تم تعديل إعدادات الوكيل من Dashboard', { fields: Object.keys($set).filter(k => k !== 'updated_at') });
-        await interaction.reply({ ...(await renderAgent(manager, agentId)), ephemeral: true });
+        await interaction.reply(await renderAgent(manager, agentId));
         return true;
     }
 
@@ -471,14 +505,18 @@ async function handleDashboardInteraction(interaction, manager) {
             return interaction.update(await renderNotifications(agentId, interaction.guildId));
         }
         if (interaction.isChannelSelectMenu() && action === 'channel_add') {
-            const { add_allowed_channel } = require('./utils');
-            await add_allowed_channel(interaction.guildId, interaction.values[0], agentId);
-            await manager.logAgent(agentId, 'channel_add', 'تمت إضافة قناة محادثة من Dashboard', { channel_id: interaction.values[0] });
-            return interaction.update(await renderAgentChannels(agentId, interaction.guildId));
+            const { add_allowed_channel, get_allowed_channels } = require('./utils');
+            const added = await add_allowed_channel(interaction.guildId, interaction.values[0], agentId);
+            const ids = await get_allowed_channels(interaction.guildId, agentId);
+            syncRuntimeAllowedChannels(manager, agentId, interaction.guildId, ids);
+            await manager.logAgent(agentId, added ? 'channel_add' : 'channel_add_limit', added ? 'تمت إضافة قناة محادثة من Dashboard' : 'فشل إضافة قناة محادثة بسبب الحد الأقصى', { channel_id: interaction.values[0] });
+            return interaction.update(await renderAgentChannels(agentId, interaction.guildId, added ? null : 'وصل الوكيل للحد الأقصى للقنوات، احذف قناة ثم حاول مجددًا.'));
         }
         if (interaction.isStringSelectMenu() && action === 'channel_remove') {
-            const { remove_allowed_channel } = require('./utils');
+            const { remove_allowed_channel, get_allowed_channels } = require('./utils');
             await remove_allowed_channel(interaction.guildId, interaction.values[0], agentId);
+            const ids = await get_allowed_channels(interaction.guildId, agentId);
+            syncRuntimeAllowedChannels(manager, agentId, interaction.guildId, ids);
             await manager.logAgent(agentId, 'channel_remove', 'تم حذف قناة محادثة من Dashboard', { channel_id: interaction.values[0] });
             return interaction.update(await renderAgentChannels(agentId, interaction.guildId));
         }
@@ -521,7 +559,13 @@ async function handleDashboardInteraction(interaction, manager) {
     return false;
 }
 
-async function renderAgentChannels(agentId, guildId) {
+function syncRuntimeAllowedChannels(manager, agentId, guildId, ids) {
+    const runtime = manager?.runtimes?.get?.(String(agentId));
+    if (!runtime?.allowed_channels_cache || !guildId) return;
+    runtime.allowed_channels_cache.set(`${String(agentId)}:${String(guildId)}`, ids.map(String));
+}
+
+async function renderAgentChannels(agentId, guildId, notice = null) {
     const cfg = require('./config');
     const { get_allowed_channels } = require('./utils');
     const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
@@ -530,6 +574,7 @@ async function renderAgentChannels(agentId, guildId) {
         `الوكيل: **${agent?.name || 'غير معروف'}**`,
         `السيرفر الحالي: **${guildId || 'غير متاح'}**`,
         `القنوات المسموحة: **${ids.length}**`,
+        notice ? `⚠️ ${notice}` : null,
         '',
         ...(ids.length ? ids.map(id => `• <#${id}>`) : ['لا توجد قنوات مضافة لهذا الوكيل في هذا السيرفر.']),
         '',
@@ -557,6 +602,8 @@ async function renderAgentChannels(agentId, guildId) {
 
 module.exports = {
     dashboardCommands,
+    dashboardCommandRoute,
+    isDashboardCommand,
     handleDashboardInteraction,
     renderHome,
     COLORS,
