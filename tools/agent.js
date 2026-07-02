@@ -12,6 +12,7 @@ const path = require('path');
 const os   = require('os');
 
 const { ChannelType } = require('discord.js');
+const { isTextChannel } = require('../discordAdapter');
 
 const {
     _err,
@@ -270,7 +271,7 @@ async function runAgent(
                     const getTargetCh = () => {
                         if (params.channel) {
                             const found = findChannel(targetGuild, String(params.channel));
-                            if (found && found.type === ChannelType.GuildText) return found;
+                            if (found && isTextChannel(found)) return found;
                         }
                         return channel;
                     };

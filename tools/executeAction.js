@@ -9,6 +9,7 @@
 
 const axios = require('axios');
 const { ChannelType, PermissionsBitField } = require('discord.js');
+const { isTextChannel, isVoiceChannel, isCategoryChannel, channelCreateType, isUserRuntime } = require('../discordAdapter');
 
 const {
     _err, _ok,
@@ -113,14 +114,14 @@ async function executeAction(guild, channel, action, params, client) {
         //  قنوات
         // ────────────────────────────────
         if (a === 'create_category') {
-            const cat = await guild.channels.create({ name: params.name, type: ChannelType.GuildCategory });
+            const cat = await guild.channels.create({ name: params.name, type: channelCreateType('category', client.__agentTokenType) });
             return _ok(`✅ تم إنشاء الكاتيكوري **${cat.name}** في **${guild.name}**`);
         }
 
         if (a === 'create_channel') {
             const catObj = params.category ? findCategory(guild, String(params.category)) : null;
             const type   = (params.type || 'text').toLowerCase();
-            const chType = type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText;
+            const chType = channelCreateType(type === 'voice' ? 'voice' : 'text', client.__agentTokenType);
             const ch     = await guild.channels.create({
                 name  : params.name,
                 type  : chType,
@@ -152,12 +153,12 @@ async function executeAction(guild, channel, action, params, client) {
             if (params.channel) {
                 const chQ  = String(params.channel);
                 const found = findChannel(guild, chQ);
-                if (found && found.type === ChannelType.GuildText) {
+                if (found && isTextChannel(found)) {
                     targetCh = found;
                 } else {
                     try {
                         const fetched = await client.channels.fetch(chQ);
-                        if (fetched && fetched.type === ChannelType.GuildText) targetCh = fetched;
+                        if (fetched && isTextChannel(fetched)) targetCh = fetched;
                     } catch (_) {
                         return _err(`❌ ما لقيت قناة نصية: **${chQ}**`);
                     }
@@ -166,7 +167,7 @@ async function executeAction(guild, channel, action, params, client) {
                 targetCh = channel;
             }
 
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة (channel).');
             }
 
@@ -212,12 +213,12 @@ async function executeAction(guild, channel, action, params, client) {
             if (params.channel) {
                 const chQ  = String(params.channel);
                 const found = findChannel(guild, chQ);
-                if (found && found.type === ChannelType.GuildText) {
+                if (found && isTextChannel(found)) {
                     targetCh = found;
                 } else {
                     try {
                         const fetched = await client.channels.fetch(chQ);
-                        if (fetched && fetched.type === ChannelType.GuildText) targetCh = fetched;
+                        if (fetched && isTextChannel(fetched)) targetCh = fetched;
                     } catch (_) {
                         return _err(`❌ ما لقيت قناة: **${chQ}**`);
                     }
@@ -395,7 +396,7 @@ async function executeAction(guild, channel, action, params, client) {
             const member = await findMember(guild, String(params.member), client);
             if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
             const vc = findChannel(guild, String(params.channel));
-            if (!vc || vc.type !== ChannelType.GuildVoice) {
+            if (!vc || !isVoiceChannel(vc)) {
                 return _err(`❌ ما لقيت فويس: **${params.channel}**`);
             }
             await member.voice.setChannel(vc);
@@ -432,9 +433,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة (channel).');
             }
             const content = String(params.content || '').trim();
@@ -447,9 +448,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
             const extra = String(params.content || '').trim();
@@ -466,9 +467,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
             const msg = await targetCh.messages.fetch(String(params.message_id));
@@ -480,9 +481,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
             const msg = await targetCh.messages.fetch(String(params.message_id));
@@ -537,15 +538,15 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لإنشاء الثريد.');
             }
             const thread = await targetCh.threads.create({
                 name                : params.name,
                 autoArchiveDuration : Number(params.auto_archive_duration || 1440),
-                type                : ChannelType.PublicThread,
+                type                : channelCreateType('thread', client.__agentTokenType),
             });
             return _ok(`✅ تم إنشاء الثريد **${thread.name}** في **#${targetCh.name}**`, { thread_id: thread.id });
         }
@@ -554,9 +555,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة للسلو مود.');
             }
             const seconds = Number(params.seconds || 0);
@@ -569,9 +570,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لقفلها.');
             }
             await targetCh.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
@@ -582,9 +583,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لفتحها.');
             }
             await targetCh.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null });
@@ -595,9 +596,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
             await targetCh.setTopic(String(params.topic || '').slice(0, 1024));
@@ -608,7 +609,7 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && [ChannelType.GuildText, ChannelType.GuildVoice].includes(found.type)) {
+                if (found && (isTextChannel(found) || isVoiceChannel(found))) {
                     targetCh = found;
                 }
             }
@@ -625,9 +626,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لأرشفتها.');
             }
             await targetCh.setName(`archived-${targetCh.name}`.slice(0, 100));
@@ -639,9 +640,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لإعادة إنشائها.');
             }
             const oldName = targetCh.name;
@@ -653,7 +654,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'create_announcement') {
             const name = params.name || 'announcements';
-            const ch   = await guild.channels.create({ name, type: ChannelType.GuildText });
+            const ch   = await guild.channels.create({ name, type: channelCreateType('text', client.__agentTokenType) });
             await ch.setTopic(params.topic || 'قناة إعلانات السيرفر');
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
@@ -705,11 +706,11 @@ async function executeAction(guild, channel, action, params, client) {
 
             // نسخ الكاتيجوريات
             const sortedCats = [...sourceGuild.channels.cache.values()]
-                .filter(c => c.type === ChannelType.GuildCategory)
+                .filter(c => isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
             for (const cat of sortedCats) {
                 try {
-                    const newCat = await target.channels.create({ name: cat.name, type: ChannelType.GuildCategory });
+                    const newCat = await target.channels.create({ name: cat.name, type: channelCreateType('category', client.__agentTokenType) });
                     catMap.set(cat.id, newCat);
                     createdCategories++;
                 } catch (e) {
@@ -719,24 +720,24 @@ async function executeAction(guild, channel, action, params, client) {
 
             // نسخ القنوات
             const sortedChannels = [...sourceGuild.channels.cache.values()]
-                .filter(c => c.type !== ChannelType.GuildCategory)
+                .filter(c => !isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
             for (const ch of sortedChannels) {
                 try {
                     const targetCat = ch.parentId ? catMap.get(ch.parentId) || null : null;
-                    if (ch.type === ChannelType.GuildText) {
+                    if (isTextChannel(ch)) {
                         await target.channels.create({
                             name           : ch.name,
-                            type           : ChannelType.GuildText,
+                            type           : channelCreateType('text', client.__agentTokenType),
                             parent         : targetCat,
                             topic          : ch.topic || null,
                             nsfw           : ch.nsfw,
                             rateLimitPerUser: ch.rateLimitPerUser,
                         });
-                    } else if (ch.type === ChannelType.GuildVoice) {
+                    } else if (isVoiceChannel(ch)) {
                         await target.channels.create({
                             name     : ch.name,
-                            type     : ChannelType.GuildVoice,
+                            type     : channelCreateType('voice', client.__agentTokenType),
                             parent   : targetCat,
                             bitrate  : Math.min(ch.bitrate, target.maximumBitrate || 96000),
                             userLimit: ch.userLimit,
@@ -765,9 +766,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لإنشاء الويبهوك.');
             }
             const wh = await targetCh.createWebhook({ name: params.name || 'Disor Webhook' });
@@ -820,9 +821,9 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = channel;
             if (params.channel) {
                 const found = findChannel(guild, String(params.channel));
-                if (found && found.type === ChannelType.GuildText) targetCh = found;
+                if (found && isTextChannel(found)) targetCh = found;
             }
-            if (!targetCh || targetCh.type !== ChannelType.GuildText) {
+            if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة للتصويت.');
             }
             const question = String(params.question || 'تصويت').trim();

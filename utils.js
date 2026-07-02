@@ -19,6 +19,8 @@ const {
     channel_sessions, allowed_channels_cache,
 } = require('./config');
 
+const { isCategoryChannel, isTextChannel } = require('./discordAdapter');
+
 // ══════════════════════════════════════════════════════════════
 //  Unified Error Helpers — نظام أخطاء موحّد
 // ══════════════════════════════════════════════════════════════
@@ -296,14 +298,14 @@ function findCategory(guild, q) {
     const qs = String(q).trim();
     try {
         const ch = guild.channels.cache.get(qs);
-        if (ch && ch.type === ChannelType.GuildCategory) return ch;
+        if (ch && isCategoryChannel(ch)) return ch;
     } catch (_) {}
     const ql = qs.toLowerCase();
     for (const ch of guild.channels.cache.values()) {
-        if (ch.type === ChannelType.GuildCategory && ch.name.toLowerCase() === ql) return ch;
+        if (isCategoryChannel(ch) && ch.name.toLowerCase() === ql) return ch;
     }
     for (const ch of guild.channels.cache.values()) {
-        if (ch.type === ChannelType.GuildCategory && ch.name.toLowerCase().includes(ql)) return ch;
+        if (isCategoryChannel(ch) && ch.name.toLowerCase().includes(ql)) return ch;
     }
     return null;
 }
@@ -717,7 +719,7 @@ async function _stream_ds(prompt, guildId, sessionId = null, parentMessageId = n
  * @param {import('discord.js').GuildBasedChannel|null} currentChannel
  * @returns {Promise<string>}
  */
-async function buildBotContext(client, guild, currentChannel = null) {
+async function buildBotContext(client, guild, currentChannel = null, agent_id = 'default', cache = allowed_channels_cache) {
     const botUser   = client.user;
     const botMember = guild.members.cache.get(botUser.id);
     const botName   = botUser.displayName || botUser.username;
@@ -762,7 +764,7 @@ async function buildBotContext(client, guild, currentChannel = null) {
         }
     }
 
-    const allowedIds   = await get_allowed_channels(guild.id);
+    const allowedIds   = await get_allowed_channels(guild.id, agent_id, cache);
     const allowedNames = allowedIds.map(cid => {
         const ch = guild.channels.cache.get(cid);
         return ch ? `#${ch.name}` : `ID:${cid}`;
@@ -779,7 +781,7 @@ async function buildBotContext(client, guild, currentChannel = null) {
         const { ChannelType } = require('discord.js');
         const chName = currentChannel.name || 'غير معروف';
         const chId   = currentChannel.id;
-        const chType = currentChannel.type === ChannelType.GuildText ? 'نصية' : 'صوتية';
+        const chType = isTextChannel(currentChannel) ? 'نصية' : 'صوتية';
         channelBlock.push(
             '',
             '  [القناة التي يتحدث فيها المستخدم معك الآن]',

@@ -72,29 +72,30 @@ const {
     runAgent,
 } = require('./tools');
 
+const {
+    createDiscordClient,
+    normalizeTokenType,
+    isTextChannel,
+} = require('./discordAdapter');
+
 // ══════════════════════════════════════════════════════════════
 //  إنشاء Client
 // ══════════════════════════════════════════════════════════════
 async function startAgentRuntime(agentConfig) {
 const agentId = String(agentConfig._id || agentConfig.id || 'default');
 const agentName = agentConfig.name || agentId;
+const tokenType = normalizeTokenType(agentConfig.token_type || agentConfig.tokenType || 'bot');
 const discordToken = agentConfig.discord_token || agentConfig.discordToken || USER_TOKEN;
-const deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken || process.env.DEEPSEEK_TOKEN;
+const deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
+if (!deepseekToken) throw new Error('deepseek_token مفقود لهذا الوكيل');
 const personality = agentConfig.personality || '';
 const channel_sessions = new Map();
 const allowed_channels_cache = new Map();
 const sessionLock = new (require('./config').SimpleLock)();
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMessageReactions,
-    ],
-    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
-});
+let intentionalStop = false;
+const client = createDiscordClient(tokenType);
+client.__agentTokenType = tokenType;
+client.__agentId = agentId;
 
 // ══════════════════════════════════════════════════════════════
 //  حدث READY
@@ -105,7 +106,11 @@ client.once('ready', async () => {
     console.log(`✅ ${botName} (${client.user.id}) ready`);
     console.log(`📡 Guilds (${client.guilds.cache.size}): ${client.guilds.cache.map(g => g.name).join(', ')}`);
 
-    // تسجيل أوامر السلاش
+    if (agentConfig.onReady) await agentConfig.onReady();
+
+    // تسجيل أوامر السلاش للبوتات فقط؛ حسابات user لا تدعم application commands
+    if (tokenType !== 'bot') return;
+
     try {
         const commands = [
             
@@ -245,7 +250,7 @@ client.on('interactionCreate', async (interaction) => {
             const guild = interaction.guild;
             const current = focused.value.toLowerCase();
             const choices = guild.channels.cache
-                .filter(ch => ch.type === ChannelType.GuildText && ch.name.toLowerCase().includes(current))
+                .filter(ch => isTextChannel(ch) && ch.name.toLowerCase().includes(current))
                 .first(25)
                 .map(ch => ({ name: `#${ch.name}`, value: ch.id }));
             await interaction.respond(choices);
@@ -303,22 +308,17 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'وكيل-تشغيل') {
-                await manager.setAgentStatus(targetId, 'running');
                 await manager.startAgent(agent);
                 await interaction.reply({ content: '✅ تم تشغيل الوكيل.', ephemeral: true });
                 return;
             }
             if (commandName === 'وكيل-ايقاف') {
-                await manager.setAgentStatus(targetId, 'stopped');
                 await manager.stopAgent(targetId);
                 await interaction.reply({ content: '✅ تم إيقاف الوكيل.', ephemeral: true });
                 return;
             }
             if (commandName === 'وكيل-اعادة-تشغيل') {
-                await manager.stopAgent(targetId);
-                const fresh = await cfg.agents_col.findOne({ _id: new ObjectId(targetId) });
-                await manager.setAgentStatus(targetId, 'running');
-                await manager.startAgent({ ...fresh, status: 'running' });
+                await manager.restartAgent(targetId, 'slash command');
                 await interaction.reply({ content: '✅ تم إعادة تشغيل الوكيل.', ephemeral: true });
                 return;
             }
@@ -367,7 +367,7 @@ client.on('interactionCreate', async (interaction) => {
             const chanValue = interaction.options.getString('قناة', true);
             let ch = guild.channels.cache.get(chanValue);
             if (!ch || ch.type !== ChannelType.GuildText) {
-                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && c.type === ChannelType.GuildText);
+                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
             }
             if (!ch) {
                 await interaction.reply({ content: '❌ ما لقيت القناة.', ephemeral: true });
@@ -412,7 +412,7 @@ client.on('interactionCreate', async (interaction) => {
             const chanValue = interaction.options.getString('قناة', true);
             let ch = guild.channels.cache.get(chanValue);
             if (!ch || ch.type !== ChannelType.GuildText) {
-                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && c.type === ChannelType.GuildText);
+                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
             }
             if (!ch) {
                 await interaction.reply({ content: '❌ ما لقيت القناة.', ephemeral: true });
@@ -596,7 +596,7 @@ client.on('messageCreate', async (message) => {
     );
 
     // بناء سياق البوت
-    const botContext = await buildBotContext(client, message.guild, message.channel);
+    const botContext = await buildBotContext(client, message.guild, message.channel, agentId, allowed_channels_cache);
 
     // جلسة القناة (per-channel)
     const chKey = `${message.guild.id}_${message.channel.id}`;
@@ -713,8 +713,39 @@ client.on('messageCreate', async (message) => {
 });
 
 
-    client.login(discordToken);
-    return { id: agentId, name: agentName, client, stop: () => client.destroy() };
+client.on('error', (err) => {
+    console.error(`[Agent ${agentId}] Discord error:`, err);
+    if (agentConfig.onError) agentConfig.onError(err);
+});
+
+client.on('shardDisconnect', (event) => {
+    if (!intentionalStop && agentConfig.onUnexpectedDisconnect) {
+        agentConfig.onUnexpectedDisconnect(`shardDisconnect ${event?.code || ''} ${event?.reason || ''}`.trim());
+    }
+});
+
+client.on('invalidated', () => {
+    if (!intentionalStop && agentConfig.onUnexpectedDisconnect) {
+        agentConfig.onUnexpectedDisconnect('session invalidated');
+    }
+});
+
+    await client.login(discordToken);
+    return {
+        id: agentId,
+        name: agentName,
+        tokenType,
+        client,
+        channel_sessions,
+        allowed_channels_cache,
+        stop: () => {
+            intentionalStop = true;
+            channel_sessions.clear();
+            allowed_channels_cache.clear();
+            client.removeAllListeners();
+            client.destroy();
+        },
+    };
 }
 
 module.exports = { startAgentRuntime };

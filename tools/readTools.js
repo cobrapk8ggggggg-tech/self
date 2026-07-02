@@ -8,6 +8,7 @@
 'use strict';
 
 const { ChannelType } = require('discord.js');
+const { isTextChannel, isVoiceChannel, isCategoryChannel } = require('../discordAdapter');
 
 const {
     _err,
@@ -26,11 +27,11 @@ const {
 function toolGetChannels(guild) {
     const rows = [];
     for (const ch of guild.channels.cache.values()) {
-        if (ch.type === ChannelType.GuildCategory) continue;
+        if (isCategoryChannel(ch)) continue;
         rows.push({
             id      : ch.id,
             name    : ch.name,
-            type    : ch.type === ChannelType.GuildText ? 'text' : 'voice',
+            type    : isTextChannel(ch) ? 'text' : 'voice',
             category: ch.parent ? ch.parent.name : null,
         });
     }
@@ -44,7 +45,7 @@ function toolGetChannels(guild) {
  */
 function toolGetCategories(guild) {
     const cats = guild.channels.cache
-        .filter(ch => ch.type === ChannelType.GuildCategory)
+        .filter(ch => isCategoryChannel(ch))
         .map(c => ({ id: c.id, name: c.name, position: c.position }));
     return { categories: [...cats] };
 }
@@ -100,7 +101,7 @@ function toolGetMembers(guild, query = null) {
  * @returns {object}
  */
 function toolServerInfo(guild) {
-    const nonCatChannels = guild.channels.cache.filter(c => c.type !== ChannelType.GuildCategory);
+    const nonCatChannels = guild.channels.cache.filter(c => !isCategoryChannel(c));
     return {
         name        : guild.name,
         id          : guild.id,
@@ -110,7 +111,7 @@ function toolServerInfo(guild) {
         boost_level : guild.premiumTier,
         boosts      : guild.premiumSubscriptionCount,
         channels    : nonCatChannels.size,
-        categories  : guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory).size,
+        categories  : guild.channels.cache.filter(c => isCategoryChannel(c)).size,
         roles       : guild.roles.cache.size,
         icon_url    : guild.iconURL() || null,
         description : guild.description || null,
@@ -133,7 +134,7 @@ function toolListAllGuilds(client) {
             member_count: g.memberCount,
             owner_id    : g.ownerId,
             bot_is_admin: isAdmin,
-            channels    : g.channels.cache.filter(c => c.type !== ChannelType.GuildCategory).size,
+            channels    : g.channels.cache.filter(c => !isCategoryChannel(c)).size,
             roles       : g.roles.cache.size,
         });
     }
@@ -289,7 +290,7 @@ async function toolGetPinnedMessages(channel) {
 function toolGetVoiceStates(guild) {
     const rows = [];
     for (const vc of guild.channels.cache.values()) {
-        if (vc.type !== ChannelType.GuildVoice) continue;
+        if (!isVoiceChannel(vc)) continue;
         for (const member of vc.members.values()) {
             const vs = member.voice;
             rows.push({
@@ -334,9 +335,9 @@ function toolModerationOverview(guild, client) {
         server                  : guild.name,
         members                 : guild.memberCount,
         roles                   : guild.roles.cache.size,
-        text_channels           : guild.channels.cache.filter(c => c.type === ChannelType.GuildText).size,
-        voice_channels          : guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size,
-        categories              : guild.channels.cache.filter(c => c.type === ChannelType.GuildCategory).size,
+        text_channels           : guild.channels.cache.filter(c => isTextChannel(c)).size,
+        voice_channels          : guild.channels.cache.filter(c => isVoiceChannel(c)).size,
+        categories              : guild.channels.cache.filter(c => isCategoryChannel(c)).size,
         boost_level             : guild.premiumTier,
         bot_top_role            : botMember?.roles.highest.name || null,
         bot_permissions         : botMember?.permissions.toArray() || [],
@@ -466,13 +467,13 @@ async function toolGetThreads(guild, channelName = null) {
         let threads = [];
         if (channelName) {
             const ch = findChannel(guild, channelName);
-            if (!ch || ch.type !== ChannelType.GuildText) {
+            if (!ch || !isTextChannel(ch)) {
                 return _err(`ما لقيت قناة نصية: ${channelName}`);
             }
             threads = [...ch.threads.cache.values()];
         } else {
             for (const ch of guild.channels.cache.values()) {
-                if (ch.type === ChannelType.GuildText && ch.threads) {
+                if (isTextChannel(ch) && ch.threads) {
                     threads.push(...ch.threads.cache.values());
                 }
             }
