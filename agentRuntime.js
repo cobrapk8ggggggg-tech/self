@@ -78,7 +78,7 @@ const {
     isTextChannel,
 } = require('./discordAdapter');
 
-const { dashboardCommands } = require('./managerDashboard');
+const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
 
 // ══════════════════════════════════════════════════════════════
 //  إنشاء Client
@@ -152,13 +152,13 @@ client.on('interactionCreate', async (interaction) => {
 
     // ── Dashboard UI delegation ──
     // Agent Runtime لا ينفذ أي إدارة محليًا. Bot Agent مجرد واجهة ترسل الطلب إلى Manager.
-    if ((interaction.isChatInputCommand() && ['panel', 'لوحة'].includes(interaction.commandName))
+    if ((interaction.isChatInputCommand() && isDashboardCommand(interaction.commandName))
         || (interaction.customId && interaction.customId.startsWith('dash:'))
         || (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId && interaction.customId.startsWith('dash:'))) {
         if (typeof agentConfig.handleManagementInteraction === 'function') {
             await agentConfig.handleManagementInteraction(interaction);
         } else if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '⚠️ Manager Runtime غير متاح لمعالجة لوحة التحكم.', ephemeral: true });
+            await interaction.reply({ content: '⚠️ Manager Runtime غير متاح لمعالجة لوحة التحكم.' });
         }
         return;
     }
@@ -191,12 +191,12 @@ client.on('interactionCreate', async (interaction) => {
                 `**قراءة:** قنوات، رتب، أعضاء، رسائل، تدقيق، دعوات، بانات، إيموجيات، ملصقات، ثريدات، ويبهوكس، فعاليات، نيترو بوسترز، قائمة البوتات، معلومات عضو تفصيلية، فويس\n` +
                 `**إدارة:** إنشاء/حذف/تعديل قنوات ورتب، منح/سحب رتب، كيك/بان/فك بان، تايم آوت، تغيير نكنيم، صلاحيات قنوات **لعضو بعينه بدون رتبة** ✨، سلو مود، قفل/فتح قناة، ثريد، ويبهوك، تصويت (poll)، استنساخ سيرفر\n\n` +
                 `> **جديد:** صلاحيات القنوات تدعم الآن إضافة أعضاء بشكل مباشر بدون رتبة`;
-            await interaction.reply({ content: helpText, ephemeral: true });
+            await interaction.reply({ content: helpText });
         }
 
         else if (commandName === 'قناة-محادثة') {
             if (!member.permissions.has('Administrator')) {
-                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.', ephemeral: true });
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
             }
             const chanValue = interaction.options.getString('قناة', true);
@@ -205,20 +205,18 @@ client.on('interactionCreate', async (interaction) => {
                 ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
             }
             if (!ch) {
-                await interaction.reply({ content: '❌ ما لقيت القناة.', ephemeral: true });
+                await interaction.reply({ content: '❌ ما لقيت القناة.' });
                 return;
             }
             const added = await add_allowed_channel(guild.id, ch.id, agentId, allowed_channels_cache);
             if (!added) {
                 await interaction.reply({
                     content: `⛔ وصلت للحد الأقصى (${MAX_CHANNELS_PER_GUILD} قنوات). احذف قناة أولاً بـ /حذف-قناة.`,
-                    ephemeral: true,
                 });
                 return;
             }
             await interaction.reply({
                 content: `✅ تم إضافة **#${ch.name}** للقنوات النشطة.\nالبوت سيستجيب الآن في هذه القناة.`,
-                ephemeral: true,
             });
         }
 
@@ -227,7 +225,6 @@ client.on('interactionCreate', async (interaction) => {
             if (!ids.length) {
                 await interaction.reply({
                     content: `📭 لا توجد قنوات مضافة بعد. استخدم **/قناة-محادثة** لإضافة قنوات (حد أقصى ${MAX_CHANNELS_PER_GUILD}).`,
-                    ephemeral: true,
                 });
                 return;
             }
@@ -236,12 +233,12 @@ client.on('interactionCreate', async (interaction) => {
                 const ch = guild.channels.cache.get(cid);
                 lines.push(`- ${ch ? '#' + ch.name : '~~محذوفة~~'} (\`${cid}\`)`);
             }
-            await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+            await interaction.reply({ content: lines.join('\n') });
         }
 
         else if (commandName === 'حذف-قناة') {
             if (!member.permissions.has('Administrator')) {
-                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.', ephemeral: true });
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
             }
             const chanValue = interaction.options.getString('قناة', true);
@@ -250,16 +247,16 @@ client.on('interactionCreate', async (interaction) => {
                 ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
             }
             if (!ch) {
-                await interaction.reply({ content: '❌ ما لقيت القناة.', ephemeral: true });
+                await interaction.reply({ content: '❌ ما لقيت القناة.' });
                 return;
             }
             const ids = await get_allowed_channels(guild.id, agentId, allowed_channels_cache);
             if (!ids.includes(ch.id)) {
-                await interaction.reply({ content: `❌ **#${ch.name}** غير موجودة في القائمة.`, ephemeral: true });
+                await interaction.reply({ content: `❌ **#${ch.name}** غير موجودة في القائمة.` });
                 return;
             }
             await remove_allowed_channel(guild.id, ch.id, agentId, allowed_channels_cache);
-            await interaction.reply({ content: `✅ تم حذف **#${ch.name}** من قنوات البوت.`, ephemeral: true });
+            await interaction.reply({ content: `✅ تم حذف **#${ch.name}** من قنوات البوت.` });
         }
 
         else if (commandName === 'محادثة-جديدة') {
@@ -268,7 +265,7 @@ client.on('interactionCreate', async (interaction) => {
             // التحقق من وجود القناة
             const chObj = guild.channels.cache.get(targetChanId);
             if (!chObj) {
-                await interaction.reply({ content: '❌ القناة غير موجودة.', ephemeral: true });
+                await interaction.reply({ content: '❌ القناة غير موجودة.' });
                 return;
             }
 
@@ -292,50 +289,49 @@ client.on('interactionCreate', async (interaction) => {
             const thinkLbl = thinking ? '🔍 مفعّل' : '⚡ غير مفعّل';
             await interaction.reply({
                 content: `✅ **تم إعادة تعيين محادثة #${chName}**\nالموديل: **${modeLabel}** | التفكير: **${thinkLbl}**`,
-                ephemeral: true,
             });
         }
 
         else if (commandName === 'رتبة-التحكم') {
             if (!member.permissions.has('Administrator')) {
-                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.', ephemeral: true });
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
             }
             const roleName = interaction.options.getString('role') || '';
             await set_control_role(guild.id, roleName, agentId);
             if (roleName) {
-                await interaction.reply({ content: `✅ رتبة التحكم: **${roleName}**`, ephemeral: true });
+                await interaction.reply({ content: `✅ رتبة التحكم: **${roleName}**` });
             } else {
-                await interaction.reply({ content: '✅ تم إزالة قيد الرتبة — الكل يقدر يستخدم البوت.', ephemeral: true });
+                await interaction.reply({ content: '✅ تم إزالة قيد الرتبة — الكل يقدر يستخدم البوت.' });
             }
         }
 
         else if (commandName === 'الرتبة-الحالية') {
             const role = await get_control_role(guild.id, agentId);
             if (role) {
-                await interaction.reply({ content: `🔒 رتبة التحكم: **${role}**`, ephemeral: true });
+                await interaction.reply({ content: `🔒 رتبة التحكم: **${role}**` });
             } else {
-                await interaction.reply({ content: '🔓 لا يوجد قيد — الكل يقدر يستخدم البوت.', ephemeral: true });
+                await interaction.reply({ content: '🔓 لا يوجد قيد — الكل يقدر يستخدم البوت.' });
             }
         }
 
         else if (commandName === 'مزود-باو') {
             if (!member.permissions.has('Administrator')) {
-                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.', ephemeral: true });
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
             }
             const provider = interaction.options.getString('provider', true);
             await set_pow_provider(guild.id, provider, agentId);
-            await interaction.reply({ content: `✅ تم تبديل مزود POW إلى **${provider}**`, ephemeral: true });
+            await interaction.reply({ content: `✅ تم تبديل مزود POW إلى **${provider}**` });
         }
 
     } catch (error) {
         console.error(`[Slash Error] ${commandName}:`, error);
         try {
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: '⚠️ حدث خطأ أثناء معالجة الأمر.', ephemeral: true });
+                await interaction.reply({ content: '⚠️ حدث خطأ أثناء معالجة الأمر.' });
             } else {
-                await interaction.followUp({ content: '⚠️ حدث خطأ.', ephemeral: true });
+                await interaction.followUp({ content: '⚠️ حدث خطأ.' });
             }
         } catch (_) {}
     }
