@@ -53,6 +53,7 @@ const {
     db_load_channel_session,
     db_save_channel_session,
     db_reset_channel_session,
+    db_list_channel_sessions,
     get_control_role,
     set_control_role,
     get_pow_provider,
@@ -79,6 +80,104 @@ const {
 } = require('./discordAdapter');
 
 const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
+
+function agentRuntimeCommands() {
+    const channelOption = (option) => option
+        .setName('قناة')
+        .setDescription('اكتب أو اختر قناة نصية')
+        .setRequired(true)
+        .setAutocomplete(true);
+
+    return [
+        new SlashCommandBuilder()
+            .setName('اوامر')
+            .setDescription('عرض أوامر هذا الوكيل'),
+        new SlashCommandBuilder()
+            .setName('قناة-محادثة')
+            .setDescription('إضافة قناة يتكلم فيها هذا الوكيل')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('قنوات-مسموحة')
+            .setDescription('عرض قنوات المحادثة المفعلة لهذا الوكيل'),
+        new SlashCommandBuilder()
+            .setName('حذف-قناة')
+            .setDescription('حذف قناة من قنوات محادثة هذا الوكيل')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('محادثة-جديدة')
+            .setDescription('بدء/تصفير محادثة قناة لهذا الوكيل')
+            .addStringOption(option => option
+                .setName('قناة')
+                .setDescription('القناة، واتركها فارغة لاستخدام القناة الحالية')
+                .setRequired(false)
+                .setAutocomplete(true))
+            .addStringOption(option => option
+                .setName('وضع')
+                .setDescription('وضع المحادثة')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'عادي', value: 'default' },
+                    { name: 'خبير', value: 'expert' },
+                ))
+            .addStringOption(option => option
+                .setName('تفكير')
+                .setDescription('تفعيل التفكير')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'مغلق', value: 'off' },
+                    { name: 'مفعل', value: 'on' },
+                )),
+        new SlashCommandBuilder()
+            .setName('عرض-المحادثات')
+            .setDescription('عرض محادثات/جلسات القنوات المحفوظة لهذا الوكيل'),
+        new SlashCommandBuilder()
+            .setName('حذف-محادثة')
+            .setDescription('حذف/تصفير محادثة قناة لهذا الوكيل')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('رتبة-التحكم')
+            .setDescription('تحديد رتبة التحكم لهذا الوكيل')
+            .addStringOption(option => option
+                .setName('role')
+                .setDescription('اسم الرتبة، أو اتركه فارغًا لإزالة القيد')
+                .setRequired(false)),
+        new SlashCommandBuilder()
+            .setName('الرتبة-الحالية')
+            .setDescription('عرض رتبة التحكم الحالية لهذا الوكيل'),
+        new SlashCommandBuilder()
+            .setName('مزود-باو')
+            .setDescription('تحديد مزود POW لهذا الوكيل')
+            .addStringOption(option => option
+                .setName('provider')
+                .setDescription('المزود')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'railway', value: 'railway' },
+                    { name: 'telegram', value: 'telegram' },
+                )),
+    ];
+}
+
+function uniqueCommands(commands) {
+    const seen = new Set();
+    return commands.filter((cmd) => {
+        const name = cmd.name;
+        if (seen.has(name)) return false;
+        seen.add(name);
+        return true;
+    });
+}
+
+function resolveChannelValue(guild, value) {
+    const raw = String(value || '').trim();
+    const id = raw.match(/^<#?(\d{15,25})>$/)?.[1] || raw;
+    let channel = guild.channels.cache.get(id);
+    if (!channel) {
+        const lowered = raw.replace(/^#/, '').toLowerCase();
+        channel = guild.channels.cache.find(c => c.name?.toLowerCase() === lowered && isTextChannel(c));
+    }
+    return channel && isTextChannel(channel) ? channel : null;
+}
 
 // ══════════════════════════════════════════════════════════════
 //  إنشاء Client
@@ -115,7 +214,7 @@ client.once('ready', async () => {
 
     try {
         // Bot Agent يسجل نقطة دخول Dashboard كواجهة فقط؛ التنفيذ الحقيقي يبقى في Manager Runtime.
-        const commands = dashboardCommands();
+        const commands = uniqueCommands([...dashboardCommands(), ...agentRuntimeCommands()]);
 
         const rest = new REST({ version: '10' }).setToken(discordToken);
 
@@ -200,10 +299,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
             const chanValue = interaction.options.getString('قناة', true);
-            let ch = guild.channels.cache.get(chanValue);
-            if (!ch || ch.type !== ChannelType.GuildText) {
-                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
-            }
+            const ch = resolveChannelValue(guild, chanValue);
             if (!ch) {
                 await interaction.reply({ content: '❌ ما لقيت القناة.' });
                 return;
@@ -242,10 +338,7 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
             const chanValue = interaction.options.getString('قناة', true);
-            let ch = guild.channels.cache.get(chanValue);
-            if (!ch || ch.type !== ChannelType.GuildText) {
-                ch = guild.channels.cache.find(c => c.name.toLowerCase() === chanValue.toLowerCase() && isTextChannel(c));
-            }
+            const ch = resolveChannelValue(guild, chanValue);
             if (!ch) {
                 await interaction.reply({ content: '❌ ما لقيت القناة.' });
                 return;
@@ -261,9 +354,10 @@ client.on('interactionCreate', async (interaction) => {
 
         else if (commandName === 'محادثة-جديدة') {
             const guildId = guild.id;
-            const targetChanId = interaction.options.getString('قناة') || interaction.channelId;
+            const chanValue = interaction.options.getString('قناة') || interaction.channelId;
+            const chObj = resolveChannelValue(guild, chanValue) || guild.channels.cache.get(chanValue);
+            const targetChanId = chObj?.id || chanValue;
             // التحقق من وجود القناة
-            const chObj = guild.channels.cache.get(targetChanId);
             if (!chObj) {
                 await interaction.reply({ content: '❌ القناة غير موجودة.' });
                 return;
@@ -290,6 +384,37 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({
                 content: `✅ **تم إعادة تعيين محادثة #${chName}**\nالموديل: **${modeLabel}** | التفكير: **${thinkLbl}**`,
             });
+        }
+
+        else if (commandName === 'عرض-المحادثات') {
+            const sessions = await db_list_channel_sessions(guild.id, agentId);
+            if (!sessions.length) {
+                await interaction.reply({ content: '📭 لا توجد محادثات محفوظة لهذا الوكيل بعد.' });
+                return;
+            }
+            const lines = ['# محادثات الوكيل المحفوظة\n'];
+            for (const session of sessions) {
+                const ch = guild.channels.cache.get(String(session.channel_id));
+                const updated = session.updated_at ? new Date(session.updated_at).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '—';
+                lines.push(`- ${ch ? '#' + ch.name : 'قناة محذوفة'} (\`${session.channel_id}\`) — الوضع: **${session.mode || 'default'}** — التفكير: **${session.thinking ? 'مفعل' : 'مغلق'}** — آخر تحديث: ${updated}`);
+            }
+            await interaction.reply({ content: lines.join('\n') });
+        }
+
+        else if (commandName === 'حذف-محادثة') {
+            if (!member.permissions.has('Administrator')) {
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            const chanValue = interaction.options.getString('قناة', true);
+            const ch = resolveChannelValue(guild, chanValue);
+            if (!ch) {
+                await interaction.reply({ content: '❌ ما لقيت القناة.' });
+                return;
+            }
+            await sessionLock.acquire(() => channel_sessions.delete(`${guild.id}_${ch.id}`));
+            await db_reset_channel_session(guild.id, ch.id, agentId);
+            await interaction.reply({ content: `✅ تم حذف/تصفير محادثة **#${ch.name}** لهذا الوكيل.` });
         }
 
         else if (commandName === 'رتبة-التحكم') {
@@ -346,18 +471,25 @@ client.on('messageCreate', async (message) => {
     // تجاهل الرسائل خارج السيرفر
     if (!message.guild) return;
 
-    // التحقق من أن القناة ضمن المسموحات
-    const allowedIds = await get_allowed_channels(message.guild.id, agentId, allowed_channels_cache);
-    if (!allowedIds.length) return;
-    if (!allowedIds.includes(message.channel.id)) return;
-
-    // التحقق من منشن البوت أو الرد على رسالته
+    // التحقق من منشن البوت أو الرد على رسالته أولاً حتى نعطي تنبيه إعداد واضح بدل الصمت الكامل.
     const isMention = message.mentions.has(client.user.id) && !message.mentions.everyone;
     const isReplyToBot = message.reference
         && message.reference.messageId
         && (await message.fetchReference().catch(() => null))?.author?.id === client.user.id;
 
     if (!isMention && !isReplyToBot) return;
+
+    // التحقق من أن القناة ضمن المسموحات
+    const allowedIds = await get_allowed_channels(message.guild.id, agentId, allowed_channels_cache);
+    if (!allowedIds.includes(message.channel.id)) {
+        if (message.member?.permissions?.has?.('Administrator')) {
+            const setupHint = allowedIds.length
+                ? 'هذه القناة غير مضافة لقنوات محادثة هذا الوكيل.'
+                : 'لا توجد أي قناة محادثة مضافة لهذا الوكيل بعد.';
+            await message.reply(`${setupHint} استخدم أمر **/قناة-محادثة** أو افتح **/لوحة → الوكلاء → القنوات** ثم أضف هذه القناة.`).catch(() => {});
+        }
+        return;
+    }
 
     // استخراج النص وإزالة منشن البوت
     let content = message.content;
@@ -569,6 +701,11 @@ client.on('invalidated', () => {
         client,
         channel_sessions,
         allowed_channels_cache,
+        refreshAllowedChannels: async (guildId) => {
+            const ids = await get_allowed_channels(guildId, agentId, allowed_channels_cache);
+            allowed_channels_cache.set(`${agentId}:${String(guildId)}`, ids.map(String));
+            return ids;
+        },
         stop: () => {
             intentionalStop = true;
             channel_sessions.clear();
