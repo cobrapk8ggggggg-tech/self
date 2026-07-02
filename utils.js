@@ -126,6 +126,18 @@ async function db_reset_channel_session(guild_id, channel_id, agent_id = 'defaul
     });
 }
 
+/**
+ * يعرض جلسات المحادثة المحفوظة لوكيل داخل سيرفر.
+ */
+async function db_list_channel_sessions(guild_id, agent_id = 'default') {
+    const cfg = require('./config');
+    return cfg.sessions_col
+        .find({ agent_id: String(agent_id), guild_id: String(guild_id) })
+        .sort({ updated_at: -1, created_at: -1 })
+        .limit(25)
+        .toArray();
+}
+
 // ══════════════════════════════════════════════════════════════
 //  Allowed Channels DB Helpers — القنوات المسموحة
 // ══════════════════════════════════════════════════════════════
@@ -866,6 +878,7 @@ module.exports = {
     db_save_channel_session,
     db_load_channel_session,
     db_reset_channel_session,
+    db_list_channel_sessions,
 
     // Allowed Channels
     get_allowed_channels,
