@@ -8,6 +8,16 @@
 
 'use strict';
 
+const { File: BufferFile } = require('node:buffer');
+
+function ensureWebFileGlobal() {
+    if (typeof globalThis.File === 'undefined' && typeof BufferFile !== 'undefined') {
+        globalThis.File = BufferFile;
+    }
+}
+
+ensureWebFileGlobal();
+
 const {
     Client: BotClient,
     GatewayIntentBits,
@@ -16,13 +26,8 @@ const {
 } = require('discord.js');
 
 function loadSelfbotLibrary() {
-    try {
-        return require('discord.js-selfbot-v13');
-    } catch (e) {
-        const err = new Error('discord.js-selfbot-v13 غير مثبت. ثبّت dependency لتشغيل وكلاء user token.');
-        err.cause = e;
-        throw err;
-    }
+    ensureWebFileGlobal();
+    return require('discord.js-selfbot-v13');
 }
 
 function normalizeTokenType(tokenType) {
