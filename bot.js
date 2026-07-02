@@ -254,7 +254,7 @@ async function startManagerBot() {
             await handleDashboardInteraction(interaction, module.exports);
         } catch (error) {
             console.error('[Dashboard Error]', error);
-            const payload = { embeds: [embed('⚠️ خطأ في Dashboard', linesBlock([error.message || String(error)]), COLORS.danger)], ephemeral: true };
+            const payload = { embeds: [embed('⚠️ خطأ في Dashboard', linesBlock([error.message || String(error)]), COLORS.danger)] };
             if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
             else await interaction.reply(payload).catch(() => {});
         }
