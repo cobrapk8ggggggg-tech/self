@@ -10,7 +10,7 @@
 
 const { ObjectId } = require('mongodb');
 const { Client, GatewayIntentBits, Partials, REST, Routes } = require('discord.js');
-const { DISCORD_TOKEN, USER_TOKEN, DEEPSEEK_TOKEN, connectMongo } = require('./config');
+const { DISCORD_TOKEN, connectMongo } = require('./config');
 const { startAgentRuntime } = require('./agentRuntime');
 const { dashboardCommands, handleDashboardInteraction, embed, linesBlock, COLORS } = require('./managerDashboard');
 
@@ -200,22 +200,12 @@ async function restartAgent(agentId, reason = 'restart requested') {
     }
 }
 
-async function ensureLegacyDefaultAgent() {
+async function retireLegacyDefaultAgents() {
     const cfg = require('./config');
-    const count = await cfg.agents_col.countDocuments();
-    if (count > 0) return;
-    if (!USER_TOKEN || !DEEPSEEK_TOKEN) return;
-    await cfg.agents_col.insertOne({
-        name          : 'default',
-        discord_token : USER_TOKEN,
-        deepseek_token: DEEPSEEK_TOKEN,
-        personality   : '',
-        status        : LIFECYCLE.RUNNING,
-        token_type    : 'bot',
-        legacy        : true,
-        created_at    : new Date(),
-        updated_at    : new Date(),
-    });
+    await cfg.agents_col.updateMany(
+        { legacy: true },
+        { $set: { status: LIFECYCLE.STOPPED, status_reason: 'Legacy env agent disabled; manager bot is control-only', updated_at: new Date() } },
+    );
 }
 
 async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot' }) {
@@ -266,10 +256,10 @@ async function startManagerBot() {
 
 async function bootAgents() {
     await connectMongo();
-    await ensureLegacyDefaultAgent();
+    await retireLegacyDefaultAgents();
     await startManagerBot();
     const cfg = require('./config');
-    const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING }).toArray();
+    const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING, legacy: { $ne: true } }).toArray();
     for (const agent of agents) startAgent(agent);
     console.log(`✅ Agent manager ready — running ${agents.length} agents`);
 }
