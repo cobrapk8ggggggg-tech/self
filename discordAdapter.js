@@ -9,14 +9,35 @@
 'use strict';
 
 const { File: BufferFile } = require('node:buffer');
+const { toUSVString } = require('node:util');
 
-function ensureWebFileGlobal() {
+function ensureWebCompatibilityGlobals() {
     if (typeof globalThis.File === 'undefined' && typeof BufferFile !== 'undefined') {
         globalThis.File = BufferFile;
     }
+
+    if (typeof String.prototype.toWellFormed !== 'function') {
+        Object.defineProperty(String.prototype, 'toWellFormed', {
+            value() {
+                return toUSVString(String(this));
+            },
+            configurable: true,
+            writable: true,
+        });
+    }
+
+    if (typeof String.prototype.isWellFormed !== 'function') {
+        Object.defineProperty(String.prototype, 'isWellFormed', {
+            value() {
+                return toUSVString(String(this)) === String(this);
+            },
+            configurable: true,
+            writable: true,
+        });
+    }
 }
 
-ensureWebFileGlobal();
+ensureWebCompatibilityGlobals();
 
 const {
     Client: BotClient,
@@ -26,7 +47,7 @@ const {
 } = require('discord.js');
 
 function loadSelfbotLibrary() {
-    ensureWebFileGlobal();
+    ensureWebCompatibilityGlobals();
     return require('discord.js-selfbot-v13');
 }
 
