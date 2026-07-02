@@ -168,6 +168,21 @@ function uniqueCommands(commands) {
     });
 }
 
+function startTypingLoop(channel) {
+    let stopped = false;
+    const sendTyping = () => {
+        if (!stopped && typeof channel?.sendTyping === 'function') {
+            channel.sendTyping().catch(() => {});
+        }
+    };
+    sendTyping();
+    const timer = setInterval(sendTyping, 8_000);
+    return () => {
+        stopped = true;
+        clearInterval(timer);
+    };
+}
+
 function resolveChannelValue(guild, value) {
     const raw = String(value || '').trim();
     const id = raw.match(/^<#?(\d{15,25})>$/)?.[1] || raw;
@@ -591,6 +606,8 @@ client.on('messageCreate', async (message) => {
         await message.reactions.cache.get('👀')?.users.remove(client.user.id).catch(() => {});
     } catch (_) {}
 
+    const stopTyping = startTypingLoop(message.channel);
+
     try {
         const result = await runAgent(
             message.guild,
@@ -627,6 +644,8 @@ client.on('messageCreate', async (message) => {
                 agentId,
             );
         }
+
+        stopTyping();
 
         const replyText = result.reply || '✅ تم.';
         const chunks = [];
@@ -665,6 +684,7 @@ client.on('messageCreate', async (message) => {
         } catch (_) {}
 
     } catch (error) {
+        stopTyping();
         console.error('[Agent Error]', error);
         try {
             await message.reply(`⚠️ خطأ غير متوقع: ${String(error.message || error).slice(0, 300)}`);
