@@ -14,6 +14,7 @@ dotenv.config();
 //  ENV — متغيرات البيئة
 // ══════════════════════════════════════════════════════════════
 const MONGODB_URI        = process.env.MONGODB_URI;
+const DISCORD_TOKEN      = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
 const USER_TOKEN         = process.env.USER_TOKEN;
 const DEEPSEEK_TOKEN     = process.env.DEEPSEEK_TOKEN;
 
@@ -62,10 +63,10 @@ const TEXT_CONTENT_TYPES = new Set([
 // ══════════════════════════════════════════════════════════════
 const { MongoClient } = require('mongodb');
 
-const mongoClient = new MongoClient(MONGODB_URI, {
+const mongoClient = MONGODB_URI ? new MongoClient(MONGODB_URI, {
     serverSelectionTimeoutMS: 10000,
     connectTimeoutMS: 10000,
-});
+}) : null;
 
 // متغيرات المجموعات — سيتم تعيينها بعد الاتصال
 let db           = null;
@@ -80,6 +81,7 @@ let logs_col     = null; // سجلات الوكلاء
  */
 async function connectMongo() {
     try {
+        if (!mongoClient) throw new Error('MONGODB_URI not set');
         await mongoClient.connect();
         db           = mongoClient.db('disor_db');
         sessions_col = db.collection('chat_sessions');
@@ -148,6 +150,7 @@ const sessionLock = new SimpleLock();
 module.exports = {
     // ENV
     MONGODB_URI,
+    DISCORD_TOKEN,
     USER_TOKEN,
     DEEPSEEK_TOKEN,
     BOT_OWNER_ID,

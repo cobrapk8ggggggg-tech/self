@@ -1,15 +1,18 @@
 /**
  * bot.js — Disor Bot v7.0 "Ironclad"
  * ═══════════════════════════════════════════════════════════
- * مدير تشغيل عدة وكلاء مستقلين
+ * Manager Runtime: المصدر الوحيد للحقيقة لإدارة وكلاء الذكاء الاصطناعي.
+ * يشغل Dashboard احترافية داخل Discord ويدير lifecycle/runtime/database/logs.
  * ═══════════════════════════════════════════════════════════
  */
 
 'use strict';
 
 const { ObjectId } = require('mongodb');
-const { USER_TOKEN, DEEPSEEK_TOKEN, connectMongo } = require('./config');
+const { Client, GatewayIntentBits, Partials, REST, Routes } = require('discord.js');
+const { DISCORD_TOKEN, USER_TOKEN, DEEPSEEK_TOKEN, connectMongo } = require('./config');
 const { startAgentRuntime } = require('./agentRuntime');
+const { dashboardCommands, handleDashboardInteraction, embed, linesBlock, COLORS } = require('./managerDashboard');
 
 const LIFECYCLE = Object.freeze({
     STARTING   : 'starting',
@@ -22,6 +25,50 @@ const LIFECYCLE = Object.freeze({
 
 const runtimes = new Map();
 const reconnectTimers = new Map();
+let managerClient = null;
+
+function createManagerClient() {
+    return new Client({
+        intents: [
+            GatewayIntentBits.Guilds,
+            GatewayIntentBits.GuildMessages,
+            GatewayIntentBits.MessageContent,
+            GatewayIntentBits.GuildMembers,
+        ],
+        partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+    });
+}
+
+async function getNotificationChannel(agentId, guildId = null) {
+    const cfg = require('./config');
+    const agent = agentId && ObjectId.isValid(String(agentId))
+        ? await cfg.agents_col.findOne({ _id: new ObjectId(agentId) }).catch(() => null)
+        : null;
+    if (agent?.notification_channel_id) return agent.notification_channel_id;
+    const settings = guildId
+        ? await cfg.settings_col.findOne({ scope: 'manager', guild_id: String(guildId) }).catch(() => null)
+        : null;
+    if (settings?.notification_channel_id) return settings.notification_channel_id;
+    const globalSettings = await cfg.settings_col.findOne({ scope: 'manager', guild_id: 'global' }).catch(() => null);
+    return globalSettings?.notification_channel_id || null;
+}
+
+async function notify({ type = 'runtime', agentId = null, title = 'Runtime Event', message = '', level = 'info', guildId = null, extra = {} }) {
+    if (!managerClient) return false;
+    const channelId = await getNotificationChannel(agentId, guildId);
+    if (!channelId) return false;
+    const channel = await managerClient.channels.fetch(channelId).catch(() => null);
+    if (!channel || typeof channel.send !== 'function') return false;
+    const color = level === 'error' ? COLORS.danger : level === 'warning' ? COLORS.warning : level === 'success' ? COLORS.success : COLORS.info;
+    const payload = embed(title, linesBlock([
+        message,
+        agentId ? `الوكيل: **${agentId}**` : null,
+        `النوع: **${type}**`,
+        extra.reason ? `السبب: ${extra.reason}` : null,
+    ]), color);
+    await channel.send({ embeds: [payload] }).catch((error) => console.error('[Notify]', error.message));
+    return true;
+}
 
 async function logAgent(agentId, type, message, extra = {}) {
     const cfg = require('./config');
@@ -33,6 +80,17 @@ async function logAgent(agentId, type, message, extra = {}) {
             extra,
             created_at: new Date(),
         });
+        const important = new Set(['starting', 'running', 'stopping', 'stopped', 'restarting', 'failed', 'error', 'delete', 'create', 'reconnect_scheduled', 'disconnect']);
+        if (important.has(String(type))) {
+            await notify({
+                type,
+                agentId,
+                title: `${type === 'failed' || type === 'error' ? '🔴' : type === 'running' ? '🟢' : '📡'} ${message}`,
+                message,
+                level: type === 'failed' || type === 'error' ? 'error' : type === 'stopped' || type === 'reconnect_scheduled' ? 'warning' : 'info',
+                extra,
+            });
+        }
     } catch (e) {
         console.error(`[AgentLog ${agentId}]`, e.message);
     }
@@ -42,7 +100,7 @@ async function setAgentStatus(agentId, status, extra = {}) {
     const cfg = require('./config');
     await cfg.agents_col.updateOne(
         { _id: new ObjectId(agentId) },
-        { $set: { status, status_reason: extra.reason || '', updated_at: new Date() } },
+        { $set: { status, status_reason: extra.reason || '', last_activity_at: new Date(), updated_at: new Date() } },
     );
 }
 
@@ -65,7 +123,7 @@ async function cleanupRuntime(agentId) {
 async function scheduleReconnect(agentId, reason = 'unexpected disconnect') {
     const id = String(agentId);
     if (reconnectTimers.has(id)) return;
-    await logAgent(id, 'reconnect_scheduled', reason);
+    await logAgent(id, 'reconnect_scheduled', reason, { reason });
     const timer = setTimeout(async () => {
         reconnectTimers.delete(id);
         const cfg = require('./config');
@@ -92,15 +150,17 @@ async function startAgent(agent) {
                 await logAgent(id, 'error', err?.message || String(err));
             },
             onUnexpectedDisconnect: async (reason) => {
+                await logAgent(id, 'disconnect', reason || 'انقطع اتصال الوكيل', { reason });
                 await scheduleReconnect(id, reason);
             },
+            handleManagementInteraction: async (interaction) => handleDashboardInteraction(interaction, module.exports),
         });
         runtimes.set(id, runtime);
         return runtime;
     } catch (e) {
         await cleanupRuntime(id);
         await setAgentStatus(id, LIFECYCLE.FAILED, { reason: e.message });
-        await logAgent(id, 'failed', e.message);
+        await logAgent(id, 'failed', e.message, { stack: e.stack });
         console.error(`[Agent ${id}] start failed:`, e);
         return null;
     }
@@ -117,7 +177,7 @@ async function stopAgent(agentId) {
         return true;
     } catch (e) {
         await setAgentStatus(id, LIFECYCLE.FAILED, { reason: e.message });
-        await logAgent(id, 'failed', e.message);
+        await logAgent(id, 'failed', e.message, { stack: e.stack });
         return false;
     }
 }
@@ -127,7 +187,7 @@ async function restartAgent(agentId, reason = 'restart requested') {
     const cfg = require('./config');
     try {
         await setAgentStatus(id, LIFECYCLE.RESTARTING, { reason });
-        await logAgent(id, 'restarting', reason);
+        await logAgent(id, 'restarting', reason, { reason });
         await cleanupRuntime(id);
         const fresh = await cfg.agents_col.findOne({ _id: new ObjectId(id) });
         if (!fresh) throw new Error('الوكيل غير موجود');
@@ -135,7 +195,7 @@ async function restartAgent(agentId, reason = 'restart requested') {
     } catch (e) {
         await cleanupRuntime(id);
         await setAgentStatus(id, LIFECYCLE.FAILED, { reason: e.message });
-        await logAgent(id, 'failed', e.message);
+        await logAgent(id, 'failed', e.message, { stack: e.stack });
         return null;
     }
 }
@@ -172,14 +232,45 @@ async function deleteAgent(agentId) {
     await logAgent(agentId, 'delete', 'تم حذف الوكيل');
 }
 
+async function registerDashboardCommands(client, token) {
+    if (!token || !client.user?.id) return;
+    const rest = new REST({ version: '10' }).setToken(token);
+    await rest.put(Routes.applicationCommands(client.user.id), { body: dashboardCommands().map(cmd => cmd.toJSON()) });
+    console.log('✅ Manager dashboard commands synced');
+}
+
+async function startManagerBot() {
+    if (!DISCORD_TOKEN) {
+        console.warn('⚠️ DISCORD_TOKEN غير محدد؛ سيتم تشغيل Manager بدون Discord Dashboard.');
+        return null;
+    }
+    managerClient = createManagerClient();
+    managerClient.once('ready', async () => {
+        console.log(`✅ Manager Bot ready as ${managerClient.user.tag}`);
+        await registerDashboardCommands(managerClient, DISCORD_TOKEN).catch((error) => console.error('❌ فشل تسجيل أوامر Dashboard:', error));
+    });
+    managerClient.on('interactionCreate', async (interaction) => {
+        try {
+            await handleDashboardInteraction(interaction, module.exports);
+        } catch (error) {
+            console.error('[Dashboard Error]', error);
+            const payload = { embeds: [embed('⚠️ خطأ في Dashboard', linesBlock([error.message || String(error)]), COLORS.danger)], ephemeral: true };
+            if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+            else await interaction.reply(payload).catch(() => {});
+        }
+    });
+    managerClient.on('error', (error) => logAgent('manager', 'error', error.message || String(error)));
+    await managerClient.login(DISCORD_TOKEN);
+    return managerClient;
+}
+
 async function bootAgents() {
     await connectMongo();
     await ensureLegacyDefaultAgent();
+    await startManagerBot();
     const cfg = require('./config');
     const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING }).toArray();
-    for (const agent of agents) {
-        startAgent(agent);
-    }
+    for (const agent of agents) startAgent(agent);
     console.log(`✅ Agent manager ready — running ${agents.length} agents`);
 }
 
@@ -192,7 +283,10 @@ module.exports = {
     createAgent,
     deleteAgent,
     setAgentStatus,
+    logAgent,
+    notify,
     bootAgents,
+    get managerClient() { return managerClient; },
 };
 
 if (require.main === module) {

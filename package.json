@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node bot.js",
     "dev": "node bot.js",
-    "update": "npm update"
+    "update": "npm update",
+    "test": "node --check config.js && node --check discordAdapter.js && node --check managerDashboard.js && node --check agentRuntime.js && node --check bot.js && node --check utils.js && node --check tools/index.js && node --check tools/agent.js && node --check tools/systemPrompt.js && node --check tools/readTools.js && node --check tools/executeAction.js"
   },
   "dependencies": {
     "discord.js": ">=14.0.0",
