@@ -186,8 +186,9 @@ async function startAgentRuntime(agentConfig) {
 const agentId = String(agentConfig._id || agentConfig.id || 'default');
 const agentName = agentConfig.name || agentId;
 const tokenType = normalizeTokenType(agentConfig.token_type || agentConfig.tokenType || 'bot');
-const discordToken = agentConfig.discord_token || agentConfig.discordToken || USER_TOKEN;
+const discordToken = agentConfig.discord_token || agentConfig.discordToken;
 const deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
+if (!discordToken) throw new Error('discord_token مفقود لهذا الوكيل');
 if (!deepseekToken) throw new Error('deepseek_token مفقود لهذا الوكيل');
 const personality = agentConfig.personality || '';
 const channel_sessions = new Map();
