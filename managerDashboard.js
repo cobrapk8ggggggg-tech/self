@@ -264,6 +264,8 @@ async function renderAgent(manager, agentId) {
         button(`${DASH_PREFIX}:agent:${id}:restart`, 'إعادة تشغيل', ButtonStyle.Primary, '🔄', isBusy),
         button(`${DASH_PREFIX}:agent:${id}:edit`, 'تعديل', ButtonStyle.Secondary, '✏️'),
         button(`${DASH_PREFIX}:agent:${id}:channels`, 'القنوات', ButtonStyle.Secondary, '📡'),
+        button(`${DASH_PREFIX}:agent:${id}:conversations`, 'المحادثات', ButtonStyle.Secondary, '💬'),
+        button(`${DASH_PREFIX}:agent:${id}:provider`, 'مزود POW', ButtonStyle.Secondary, '⚡'),
         button(`${DASH_PREFIX}:agent:${id}:notify`, 'الإشعارات', ButtonStyle.Secondary, '🔔'),
         button(`${DASH_PREFIX}:agent:${id}:logs:0`, 'Timeline', ButtonStyle.Secondary, '📜'),
         button(`${DASH_PREFIX}:agent:${id}:delete_confirm`, 'حذف', ButtonStyle.Danger, '🗑️'),
@@ -520,10 +522,26 @@ async function handleDashboardInteraction(interaction, manager) {
             await manager.logAgent(agentId, 'channel_remove', 'تم حذف قناة محادثة من Dashboard', { channel_id: interaction.values[0] });
             return interaction.update(await renderAgentChannels(agentId, interaction.guildId));
         }
+        if (interaction.isStringSelectMenu() && action === 'provider_set') {
+            const { set_pow_provider } = require('./utils');
+            await set_pow_provider(interaction.guildId, interaction.values[0], agentId);
+            await manager.logAgent(agentId, 'provider_update', 'تم تحديث مزود POW للوكيل من Dashboard', { provider: interaction.values[0] });
+            return interaction.update(await renderAgentProvider(agentId, interaction.guildId));
+        }
+        if (interaction.isStringSelectMenu() && action === 'conversation_delete') {
+            const { db_reset_channel_session } = require('./utils');
+            await db_reset_channel_session(interaction.guildId, interaction.values[0], agentId);
+            const runtime = manager?.runtimes?.get?.(String(agentId));
+            runtime?.channel_sessions?.delete?.(`${interaction.guildId}_${interaction.values[0]}`);
+            await manager.logAgent(agentId, 'conversation_delete', 'تم حذف محادثة قناة من Dashboard', { channel_id: interaction.values[0] });
+            return interaction.update(await renderAgentConversations(agentId, interaction.guildId));
+        }
         if (action === 'view') return updateInteraction(interaction, await renderAgent(manager, agentId));
         if (action === 'logs') return updateInteraction(interaction, await renderLogs(agentId, parts[4]));
         if (action === 'notify') return updateInteraction(interaction, await renderNotifications(agentId, interaction.guildId));
         if (action === 'channels') return updateInteraction(interaction, await renderAgentChannels(agentId, interaction.guildId));
+        if (action === 'conversations') return updateInteraction(interaction, await renderAgentConversations(agentId, interaction.guildId));
+        if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -557,6 +575,64 @@ async function handleDashboardInteraction(interaction, manager) {
     }
 
     return false;
+}
+
+
+async function renderAgentProvider(agentId, guildId) {
+    const cfg = require('./config');
+    const { get_pow_provider } = require('./utils');
+    const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const provider = guildId ? await get_pow_provider(guildId, agentId).catch(() => 'railway') : 'railway';
+    const emb = embed('⚡ مزود POW للوكيل', linesBlock([
+        `الوكيل: **${agent?.name || 'غير معروف'}**`,
+        `السيرفر الحالي: **${guildId || 'غير متاح'}**`,
+        `المزود الحالي: **${provider}**`,
+        '',
+        'هذا الإعداد خاص بهذا الوكيل، وليس Manager Bot.',
+    ]), COLORS.info);
+    const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId(`${DASH_PREFIX}:agent:${agentId}:provider_set`)
+            .setPlaceholder('اختر مزود POW لهذا الوكيل')
+            .addOptions([
+                { label: 'railway', value: 'railway', description: 'استخدام مزود Railway' },
+                { label: 'telegram', value: 'telegram', description: 'استخدام مزود Telegram proxy' },
+            ]),
+    );
+    return { embeds: [emb], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back), button(`${DASH_PREFIX}:agent:${agentId}:provider`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh)])] };
+}
+
+async function renderAgentConversations(agentId, guildId) {
+    const cfg = require('./config');
+    const { db_list_channel_sessions } = require('./utils');
+    const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const sessions = guildId ? await db_list_channel_sessions(guildId, agentId).catch(() => []) : [];
+    const rows = sessions.length ? sessions.map((session) => {
+        const channelId = String(session.channel_id);
+        const updated = fmtDate(session.updated_at || session.created_at);
+        return `• <#${channelId}> — الوضع: **${session.mode || 'default'}** — التفكير: **${session.thinking ? 'مفعل' : 'مغلق'}** — ${updated}`;
+    }) : ['لا توجد محادثات محفوظة لهذا الوكيل في هذا السيرفر.'];
+    const emb = embed('💬 محادثات الوكيل', linesBlock([
+        `الوكيل: **${agent?.name || 'غير معروف'}**`,
+        `السيرفر الحالي: **${guildId || 'غير متاح'}**`,
+        `عدد المحادثات: **${sessions.length}**`,
+        '',
+        ...rows,
+    ]), COLORS.info);
+    const components = [];
+    if (sessions.length) {
+        components.push(new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(`${DASH_PREFIX}:agent:${agentId}:conversation_delete`)
+                .setPlaceholder('اختر محادثة لحذفها/تصفيرها')
+                .addOptions(sessions.slice(0, 25).map((session) => {
+                    const channelId = String(session.channel_id);
+                    return { label: `محادثة ${channelId}`.slice(0, 100), value: channelId, description: 'حذف جلسة هذه القناة' };
+                })),
+        ));
+    }
+    components.push(...rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back), button(`${DASH_PREFIX}:agent:${agentId}:conversations`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh)]));
+    return { embeds: [emb], components };
 }
 
 function syncRuntimeAllowedChannels(manager, agentId, guildId, ids) {
