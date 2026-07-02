@@ -78,6 +78,8 @@ const {
     isTextChannel,
 } = require('./discordAdapter');
 
+const { dashboardCommands } = require('./managerDashboard');
+
 // ══════════════════════════════════════════════════════════════
 //  إنشاء Client
 // ══════════════════════════════════════════════════════════════
@@ -112,127 +114,17 @@ client.once('ready', async () => {
     if (tokenType !== 'bot') return;
 
     try {
-        const commands = [
-            
-            new SlashCommandBuilder()
-                .setName('وكلاء')
-                .setDescription('عرض جميع الوكلاء وحالة كل وكيل (Owner فقط)'),
-            new SlashCommandBuilder()
-                .setName('وكيل-انشاء')
-                .setDescription('إنشاء وكيل مستقل جديد (Owner فقط)')
-                .addStringOption(o => o.setName('name').setDescription('اسم الوكيل').setRequired(true))
-                .addStringOption(o => o.setName('discord_token').setDescription('Discord Token').setRequired(true))
-                .addStringOption(o => o.setName('deepseek_token').setDescription('DeepSeek Token').setRequired(true))
-                .addStringOption(o => o.setName('personality').setDescription('شخصية الوكيل').setRequired(false))
-                .addStringOption(o => o.setName('token_type').setDescription('نوع التوكن').setRequired(false).addChoices({ name: 'Bot Token', value: 'bot' }, { name: 'User Token', value: 'user' })),
-            new SlashCommandBuilder()
-                .setName('وكيل-تشغيل')
-                .setDescription('تشغيل وكيل (Owner فقط)')
-                .addStringOption(o => o.setName('id').setDescription('Agent ID').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('وكيل-ايقاف')
-                .setDescription('إيقاف وكيل (Owner فقط)')
-                .addStringOption(o => o.setName('id').setDescription('Agent ID').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('وكيل-اعادة-تشغيل')
-                .setDescription('إعادة تشغيل وكيل (Owner فقط)')
-                .addStringOption(o => o.setName('id').setDescription('Agent ID').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('وكيل-حذف')
-                .setDescription('حذف وكيل (Owner فقط)')
-                .addStringOption(o => o.setName('id').setDescription('Agent ID').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('وكيل-تعديل')
-                .setDescription('تعديل إعدادات وكيل (Owner فقط)')
-                .addStringOption(o => o.setName('id').setDescription('Agent ID').setRequired(true))
-                .addStringOption(o => o.setName('name').setDescription('اسم جديد').setRequired(false))
-                .addStringOption(o => o.setName('discord_token').setDescription('Discord Token جديد').setRequired(false))
-                .addStringOption(o => o.setName('deepseek_token').setDescription('DeepSeek Token جديد').setRequired(false))
-                .addStringOption(o => o.setName('personality').setDescription('شخصية جديدة').setRequired(false)),
-            new SlashCommandBuilder()
-                .setName('اوامر')
-                .setDescription('عرض جميع الأوامر المتاحة'),
-            new SlashCommandBuilder()
-                .setName('قناة-محادثة')
-                .setDescription('أضف قناة لقائمة قنوات البوت (أدمن فقط)')
-                .addStringOption(option =>
-                    option.setName('قناة')
-                        .setDescription('اختر القناة')
-                        .setRequired(true)
-                        .setAutocomplete(true),
-                ),
-            new SlashCommandBuilder()
-                .setName('قنوات-مسموحة')
-                .setDescription('عرض قنوات البوت النشطة في هذا السيرفر'),
-            new SlashCommandBuilder()
-                .setName('حذف-قناة')
-                .setDescription('احذف قناة من قائمة البوت (أدمن فقط)')
-                .addStringOption(option =>
-                    option.setName('قناة')
-                        .setDescription('اختر القناة للحذف')
-                        .setRequired(true)
-                        .setAutocomplete(true),
-                ),
-            new SlashCommandBuilder()
-                .setName('محادثة-جديدة')
-                .setDescription('أعد تعيين محادثة قناة واختر الموديل')
-                .addStringOption(option =>
-                    option.setName('قناة')
-                        .setDescription('القناة التي تريد إعادة تعيين محادثتها (اتركها فارغة للقناة الحالية)')
-                        .setRequired(false)
-                        .setAutocomplete(true),
-                )
-                .addStringOption(option =>
-                    option.setName('وضع')
-                        .setDescription('نوع الموديل')
-                        .setRequired(false)
-                        .addChoices(
-                            { name: '🗨️ عادي', value: 'default' },
-                            { name: '🧠 خبير (Expert)', value: 'expert' },
-                        ),
-                )
-                .addStringOption(option =>
-                    option.setName('تفكير')
-                        .setDescription('تفعيل التفكير العميق')
-                        .setRequired(false)
-                        .addChoices(
-                            { name: '⚡ بدون تفكير — رد مباشر وأسرع', value: 'off' },
-                            { name: '🔍 مع تفكير عميق — تحليل أدق', value: 'on' },
-                        ),
-                ),
-            new SlashCommandBuilder()
-                .setName('رتبة-التحكم')
-                .setDescription('حدد الرتبة التي تستطيع استخدام البوت (أدمن فقط)')
-                .addStringOption(option =>
-                    option.setName('role')
-                        .setDescription('اسم الرتبة (اتركها فارغة لتعطيل القيد)')
-                        .setRequired(false),
-                ),
-            new SlashCommandBuilder()
-                .setName('الرتبة-الحالية')
-                .setDescription('عرض رتبة التحكم الحالية'),
-            new SlashCommandBuilder()
-                .setName('مزود-باو')
-                .setDescription('تبديل مزود POW (أدمن فقط)')
-                .addStringOption(option =>
-                    option.setName('provider')
-                        .setDescription('اختر المزود')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: '🚂 Railway (افتراضي)', value: 'railway' },
-                            { name: '✈️ Telegram Proxy', value: 'telegram' },
-                        ),
-                ),
-        ];
+        // Bot Agent يسجل نقطة دخول Dashboard كواجهة فقط؛ التنفيذ الحقيقي يبقى في Manager Runtime.
+        const commands = dashboardCommands();
 
         const rest = new REST({ version: '10' }).setToken(discordToken);
 
-        console.log('⏳ جاري تسجيل أوامر السلاش...');
+        console.log('⏳ جاري تسجيل واجهة Dashboard للوكيل...');
         await rest.put(
             Routes.applicationCommands(client.user.id),
             { body: commands.map(cmd => cmd.toJSON()) },
         );
-        console.log('✅ Slash commands synced');
+        console.log('✅ Agent dashboard UI synced');
     } catch (err) {
         console.error('❌ فشل تسجيل أوامر السلاش:', err);
     }
@@ -258,7 +150,20 @@ client.on('interactionCreate', async (interaction) => {
         return;
     }
 
-    // ── Slash Commands ──
+    // ── Dashboard UI delegation ──
+    // Agent Runtime لا ينفذ أي إدارة محليًا. Bot Agent مجرد واجهة ترسل الطلب إلى Manager.
+    if ((interaction.isChatInputCommand() && ['panel', 'لوحة'].includes(interaction.commandName))
+        || (interaction.customId && interaction.customId.startsWith('dash:'))
+        || (interaction.isModalSubmit && interaction.isModalSubmit() && interaction.customId && interaction.customId.startsWith('dash:'))) {
+        if (typeof agentConfig.handleManagementInteraction === 'function') {
+            await agentConfig.handleManagementInteraction(interaction);
+        } else if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: '⚠️ Manager Runtime غير متاح لمعالجة لوحة التحكم.', ephemeral: true });
+        }
+        return;
+    }
+
+    // لا توجد أوامر إدارة محلية داخل Agent Runtime.
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
@@ -267,77 +172,7 @@ client.on('interactionCreate', async (interaction) => {
 
     try {
 
-        if (['وكلاء', 'وكيل-انشاء', 'وكيل-تشغيل', 'وكيل-ايقاف', 'وكيل-اعادة-تشغيل', 'وكيل-حذف', 'وكيل-تعديل'].includes(commandName)) {
-            if (!isBotOwner(interaction.user.id)) {
-                await interaction.reply({ content: '⛔ هذا الأمر للمالك فقط.', ephemeral: true });
-                return;
-            }
-            const manager = require('./bot');
-            const cfg = require('./config');
-            const { ObjectId } = require('mongodb');
-
-            if (commandName === 'وكلاء') {
-                const agents = await cfg.agents_col.find({}).toArray();
-                const lines = ['# الوكلاء'];
-                for (const a of agents) {
-                    const id = String(a._id);
-                    const running = manager.runtimes.has(id) ? '🟢 يعمل' : '🔴 متوقف';
-                    lines.push(`- **${a.name || id}** | \`${id}\` | DB: **${a.status || 'stopped'}** | ${running} | النوع: **${a.token_type || 'bot'}**`);
-                }
-                await interaction.reply({ content: lines.join('\n').slice(0, 1900), ephemeral: true });
-                return;
-            }
-
-            if (commandName === 'وكيل-انشاء') {
-                const agent = await manager.createAgent({
-                    name: interaction.options.getString('name', true),
-                    discord_token: interaction.options.getString('discord_token', true),
-                    deepseek_token: interaction.options.getString('deepseek_token', true),
-                    personality: interaction.options.getString('personality') || '',
-                    token_type: interaction.options.getString('token_type') || 'bot',
-                });
-                await interaction.reply({ content: `✅ تم إنشاء الوكيل **${agent.name}**\nID: \`${agent._id}\``, ephemeral: true });
-                return;
-            }
-
-            const targetId = interaction.options.getString('id', true);
-            const agent = await cfg.agents_col.findOne({ _id: new ObjectId(targetId) });
-            if (!agent && commandName !== 'وكيل-حذف') {
-                await interaction.reply({ content: '❌ الوكيل غير موجود.', ephemeral: true });
-                return;
-            }
-
-            if (commandName === 'وكيل-تشغيل') {
-                await manager.startAgent(agent);
-                await interaction.reply({ content: '✅ تم تشغيل الوكيل.', ephemeral: true });
-                return;
-            }
-            if (commandName === 'وكيل-ايقاف') {
-                await manager.stopAgent(targetId);
-                await interaction.reply({ content: '✅ تم إيقاف الوكيل.', ephemeral: true });
-                return;
-            }
-            if (commandName === 'وكيل-اعادة-تشغيل') {
-                await manager.restartAgent(targetId, 'slash command');
-                await interaction.reply({ content: '✅ تم إعادة تشغيل الوكيل.', ephemeral: true });
-                return;
-            }
-            if (commandName === 'وكيل-حذف') {
-                await manager.deleteAgent(targetId);
-                await interaction.reply({ content: '✅ تم حذف الوكيل.', ephemeral: true });
-                return;
-            }
-            if (commandName === 'وكيل-تعديل') {
-                const $set = { updated_at: new Date() };
-                for (const key of ['name', 'discord_token', 'deepseek_token', 'personality']) {
-                    const val = interaction.options.getString(key);
-                    if (val !== null) $set[key] = val;
-                }
-                await cfg.agents_col.updateOne({ _id: new ObjectId(targetId) }, { $set });
-                await interaction.reply({ content: '✅ تم تعديل إعدادات الوكيل. أعد تشغيله لتطبيق تغييرات التوكن.', ephemeral: true });
-                return;
-            }
-        }
+        // أوامر إدارة الوكلاء نُقلت بالكامل إلى Manager Dashboard.
 
         if (commandName === 'اوامر') {
             const botName = client.user.displayName || client.user.username;

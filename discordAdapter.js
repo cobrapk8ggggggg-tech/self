@@ -32,8 +32,11 @@ function normalizeTokenType(tokenType) {
 function createDiscordClient(tokenType = 'bot') {
     const type = normalizeTokenType(tokenType);
     if (type === 'user') {
+        // نفس فلسفة Auto-main: selfbot client بسيط ومباشر، دون خلط خيارات discord.js v14.
         const { Client: UserClient } = loadSelfbotLibrary();
-        return new UserClient({ checkUpdate: false });
+        const client = new UserClient();
+        client.__selfbotRuntime = true;
+        return client;
     }
 
     return new BotClient({
