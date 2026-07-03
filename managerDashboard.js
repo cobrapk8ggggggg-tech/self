@@ -500,7 +500,7 @@ async function handleDashboardInteraction(interaction, manager) {
         const count = parseInt(parts[2], 10);
         const agentId = interaction.values[0];
         const cfg = require('./config');
-        const { runEventSeries, getAccountSettings } = require('./accountAgent');
+        const { startEvent, WIN_RE } = require('./accountAgent');
         const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
         if (!agent) {
             await interaction.update({ embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)], components: [] });
@@ -516,6 +516,7 @@ async function handleDashboardInteraction(interaction, manager) {
             await interaction.update({ embeds: [embed('❌ خطأ', linesBlock(['هذا الأمر يعمل فقط داخل السيرفرات.']), COLORS.danger)], components: [] });
             return true;
         }
+        const { getAccountSettings } = require('./accountAgent');
         const settings = await getAccountSettings(agentId, guild.id);
         const channelId = settings.event_channel_id || interaction.channelId;
         const channel = guild.channels.cache.get(channelId);
@@ -523,15 +524,32 @@ async function handleDashboardInteraction(interaction, manager) {
             await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو ليست قناة نصية.']), COLORS.danger)], components: [] });
             return true;
         }
+
+        // إعلام المستخدم بأن الفعاليات بدأت
+        await interaction.update({ embeds: [embed('⏳ جاري تشغيل الفعاليات', linesBlock([`الوكيل: **${agent.name || agentId}**`, `عدد الفعاليات: **${count}**`, 'سيتم إرسال الفعالية التالية بعد ظهور نتيجة الفعالية السابقة.']), COLORS.info)], components: [] });
+
+        // تنفيذ الفعاليات بشكل متسلسل مع انتظار رسالة الفوز
         try {
-            const result = await runEventSeries(runtime.client, guild, channel, runtime, { count, first: true });
-            await interaction.update({ embeds: [embed('✅ تم التشغيل اليدوي', linesBlock([
-                `الوكيل: **${agent.name || agentId}**`,
-                `عدد الفعاليات: **${count}**`,
-                `النتيجة: ${result.msg}`,
-            ]), COLORS.success)], components: [] });
+            let completed = 0;
+            for (let i = 0; i < count; i++) {
+                const game = await startEvent(runtime.client, guild, channel, runtime, null, i === 0);
+                // انتظار رسالة من بوت اللعبة تحتوي على فوز
+                try {
+                    const collected = await channel.awaitMessages({
+                        filter: m => m.author.bot && WIN_RE.test(m.content),
+                        max: 1,
+                        time: 300_000, // 5 دقائق
+                        errors: ['time']
+                    });
+                    // تم استلام رسالة الفوز، يمكن متابعة التالية
+                } catch (e) {
+                    // انتهى الوقت بدون رسالة فوز، نكمل على أية حال
+                }
+                completed++;
+            }
+            await interaction.followUp({ embeds: [embed('✅ اكتملت الفعاليات', linesBlock([`تم تشغيل **${completed}** فعالية بنجاح عبر الوكيل **${agent.name || agentId}**`]), COLORS.success)], ephemeral: true });
         } catch (err) {
-            await interaction.update({ embeds: [embed('❌ فشل التشغيل اليدوي', linesBlock([`حدث خطأ: ${err.message}`]), COLORS.danger)], components: [] });
+            await interaction.followUp({ embeds: [embed('❌ خطأ', linesBlock([`حدث خطأ أثناء تشغيل الفعاليات: ${err.message}`]), COLORS.danger)], ephemeral: true });
         }
         return true;
     }
