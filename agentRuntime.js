@@ -80,7 +80,7 @@ const {
 } = require('./discordAdapter');
 
 const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
-const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent } = require('./accountAgent');
+const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, rememberActivity, maybeAutoEvent } = require('./accountAgent');
 
 function agentRuntimeCommands() {
     const channelOption = (option) => option
@@ -153,6 +153,18 @@ function agentRuntimeCommands() {
             .setName('حساب-منشن')
             .setDescription('تحديد قناة تحويل المنشن/الردود للحساب الحقيقي')
             .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('حساب-تسليمات')
+            .setDescription('تحديد قناة تسليم نتائج الألعاب للحساب الحقيقي')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('حساب-قناة-فعاليات')
+            .setDescription('تحديد قناة الفعاليات التلقائية للحساب الحقيقي')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('حساب-رول-فعاليات')
+            .setDescription('تحديد رول منشن الفعاليات للحساب الحقيقي')
+            .addStringOption(option => option.setName('role').setDescription('اسم/ID الرتبة').setRequired(true)),
         new SlashCommandBuilder()
             .setName('فعاليات-وضع')
             .setDescription('تبديل وضع فعاليات الحساب الحقيقي')
@@ -332,6 +344,9 @@ client.on('interactionCreate', async (interaction) => {
                 `**/مزود-باو** — تبديل مزود POW\n` +
                 `**/حساب-خاص** — قناة تحويل رسائل الخاص للحساب الحقيقي\n` +
                 `**/حساب-منشن** — قناة تحويل المنشن/الردود للحساب الحقيقي\n` +
+                `**/حساب-تسليمات** — قناة نقل نتائج وفوز الألعاب\n` +
+                `**/حساب-قناة-فعاليات** — قناة الفعاليات التلقائية\n` +
+                `**/حساب-رول-فعاليات** — رول منشن الفعاليات\n` +
                 `**/فعاليات-وضع** — تلقائي/يدوي للفعاليات\n` +
                 `**/ابدأ-فعالية** — بدء لعبة من قائمة الألعاب المحددة\n\n` +
                 `## 🧠 قدرات البوت\n` +
@@ -489,7 +504,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
 
-        else if (commandName === 'حساب-خاص' || commandName === 'حساب-منشن') {
+        else if (['حساب-خاص', 'حساب-منشن', 'حساب-تسليمات', 'حساب-قناة-فعاليات'].includes(commandName)) {
             if (!member.permissions.has('Administrator')) {
                 await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
@@ -500,9 +515,24 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply({ content: '❌ ما لقيت القناة.' });
                 return;
             }
-            const key = commandName === 'حساب-خاص' ? 'dm_channel_id' : 'mention_channel_id';
-            await updateAccountSettings(agentId, guild.id, { [key]: ch.id });
-            await interaction.reply({ content: `✅ تم تحديد **#${ch.name}** لقناة ${commandName === 'حساب-خاص' ? 'الخاص' : 'المنشن/الردود'} للحساب الحقيقي.` });
+            const keyMap = { 'حساب-خاص': 'dm_channel_id', 'حساب-منشن': 'mention_channel_id', 'حساب-تسليمات': 'deliveries_channel_id', 'حساب-قناة-فعاليات': 'event_channel_id' };
+            await updateAccountSettings(agentId, guild.id, { [keyMap[commandName]]: ch.id });
+            await interaction.reply({ content: `✅ تم تحديد **#${ch.name}** لإعداد **${commandName}** للحساب الحقيقي.` });
+        }
+
+        else if (commandName === 'حساب-رول-فعاليات') {
+            if (!member.permissions.has('Administrator')) {
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            const roleQ = interaction.options.getString('role', true);
+            const role = findRole(guild, roleQ);
+            if (!role) {
+                await interaction.reply({ content: '❌ ما لقيت الرتبة.' });
+                return;
+            }
+            await updateAccountSettings(agentId, guild.id, { event_role_id: role.id });
+            await interaction.reply({ content: `✅ تم تحديد رول الفعاليات: <@&${role.id}>` });
         }
 
         else if (commandName === 'فعاليات-وضع') {
@@ -571,7 +601,9 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
+    rememberActivity(agentId, message);
     await trackGameMessage(client, message, runtimeContext).catch(() => false);
+    await maybeAutoEvent(client, message, runtimeContext).catch(() => false);
 
     // التحقق من منشن البوت أو الرد على رسالته أولاً حتى نعطي تنبيه إعداد واضح بدل الصمت الكامل.
     const isMention = message.mentions.has(client.user.id) && !message.mentions.everyone;
