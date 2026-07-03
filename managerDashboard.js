@@ -69,8 +69,9 @@ function dashboardCommands() {
                     .setMaxValue(25))
             .addStringOption(opt =>
                 opt.setName('agent')
-                    .setDescription('معرف الوكيل (اختياري، يترك فارغاً لأول وكيل في السيرفر)')
-                    .setRequired(false)),
+                    .setDescription('اختر الوكيل من القائمة')
+                    .setRequired(true)
+                    .setAutocomplete(true)),
     ];
 }
 
@@ -457,6 +458,23 @@ async function updateInteraction(interaction, payload) {
     return interaction.reply(payload);
 }
 
+async function dashboardAutocomplete(interaction) {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== 'agent') return;
+    const cfg = require('./config');
+    try {
+        const agents = await cfg.agents_col.find({}).sort({ name: 1 }).limit(25).toArray();
+        const choices = agents.map(a => ({
+            name: trim(`${statusIcon(a.status)} ${a.name || String(a._id)}`, 100),
+            value: String(a._id),
+        }));
+        await interaction.respond(choices);
+    } catch (e) {
+        console.error('Autocomplete error:', e);
+        await interaction.respond([]);
+    }
+}
+
 async function handleDashboardInteraction(interaction, manager) {
     const commandRoute = interaction.isChatInputCommand?.() ? dashboardCommandRoute(interaction.commandName) : null;
     const commandOk = Boolean(commandRoute);
@@ -469,38 +487,18 @@ async function handleDashboardInteraction(interaction, manager) {
             const cfg = require('./config');
             const { runManual } = require('./accountAgent');
             const count = interaction.options.getInteger('count', true);
-            let agentId = interaction.options.getString('agent');
-
-            // إذا لم يحدد المستخدم وكيلاً، نبحث عن أول وكيل له إعدادات حساب في هذا السيرفر
-            if (!agentId) {
-                const accountCfg = require('./config'); // نستخدم config للوصول إلى collection
-                const accSettings = await accountCfg.account_settings_col?.findOne?.(
-                    { scope: 'agent', guild_id: String(interaction.guildId) },
-                    { sort: { updated_at: -1 } }
-                ).catch(() => null);
-                if (accSettings) {
-                    agentId = accSettings.agent_id;
-                }
-                if (!agentId) {
-                    await interaction.reply({
-                        embeds: [embed('❌ لا يوجد وكيل', linesBlock(['لم يتم العثور على أي وكيل مرتبط بهذا السيرفر. استخدم الأمر مع تحديد معرف الوكيل.']), COLORS.danger)],
-                        ephemeral: true,
-                    });
-                    return true;
-                }
-            }
+            const agentId = interaction.options.getString('agent', true); // مضمون وجوده لأنه مطلوب
 
             // التحقق من وجود الوكيل
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) {
                 await interaction.reply({
-                    embeds: [embed('❌ وكيل غير صالح', linesBlock(['المعرف المقدم لا يشير إلى وكيل موجود.']), COLORS.danger)],
+                    embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)],
                     ephemeral: true,
                 });
                 return true;
             }
 
-            // تشغيل الفعاليات اليدوية
             try {
                 const result = await runManual(agentId, interaction.guildId, count);
                 await interaction.reply({
@@ -919,6 +917,7 @@ module.exports = {
     dashboardCommandRoute,
     isDashboardCommand,
     handleDashboardInteraction,
+    dashboardAutocomplete,
     renderHome,
     COLORS,
     embed,
