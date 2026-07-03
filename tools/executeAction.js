@@ -493,6 +493,53 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم إرسال منشن @everyone في **#${targetCh.name}**`, { message_id: sent.id });
         }
 
+
+        if (a === 'react_message') {
+            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
+            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            if (!msg) return _err('❌ لم أجد الرسالة.');
+            await msg.react(String(params.emoji || '✅'));
+            return _ok(`✅ تم وضع التفاعل على الرسالة في #${targetCh.name}`);
+        }
+
+        if (a === 'edit_own_message') {
+            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
+            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            if (!msg) return _err('❌ لم أجد الرسالة.');
+            if (msg.author.id !== client.user.id) return _err('❌ لا أستطيع تعديل رسالة ليست لي.');
+            await msg.edit(String(params.content || '').slice(0, 2000));
+            return _ok(`✅ تم تعديل رسالتي في #${targetCh.name}`);
+        }
+
+        if (a === 'delete_message') {
+            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
+            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            if (!msg) return _err('❌ لم أجد الرسالة.');
+            await msg.delete();
+            return _ok(`🗑️ تم حذف الرسالة من #${targetCh.name}`);
+        }
+
+        if (a === 'forward_message') {
+            const fromCh = params.from_channel ? findChannel(guild, String(params.from_channel)) : channel;
+            const toCh = params.to_channel ? findChannel(guild, String(params.to_channel)) : channel;
+            if (!fromCh || !toCh || !isTextChannel(fromCh) || !isTextChannel(toCh)) return _err('❌ حدد قنوات نصية صحيحة.');
+            const msg = await fromCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            if (!msg) return _err('❌ لم أجد الرسالة الأصلية.');
+            const sent = await msg.forward(toCh).catch(async () => toCh.send({ content: `Forwarded from ${msg.url}\n${String(msg.content || '').slice(0, 1800)}` }));
+            return _ok(`📨 تم تحويل الرسالة إلى #${toCh.name}`, { message_id: sent?.id || null });
+        }
+
+        if (a === 'send_dm') {
+            const userId = String(params.user || params.member || '').trim();
+            const user = await client.users.fetch(userId).catch(() => null);
+            if (!user) return _err('❌ لم أجد المستخدم لإرسال الخاص.');
+            const sent = await user.send(String(params.content || '').slice(0, 2000));
+            return _ok(`📩 تم إرسال رسالة خاصة إلى ${user.username}`, { message_id: sent.id });
+        }
+
         if (a === 'pin_message') {
             let targetCh = channel;
             if (params.channel) {
