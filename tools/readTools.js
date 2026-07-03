@@ -559,6 +559,73 @@ async function toolGetMemberInfo(guild, memberQuery) {
     };
 }
 
+
+/** يستكشف أوامر بوت من الرسائل الحديثة والبريفكسات والألعاب المعروفة */
+async function toolGetBotCommands(guild, botQuery, channel = null, limit = 300) {
+    let bot = await findMember(guild, String(botQuery || '')).catch(() => null);
+    if (!bot && botQuery) {
+        try { bot = await guild.members.fetch(String(botQuery).trim()); } catch (_) {}
+    }
+    if (!bot || !bot.user?.bot) return _err(`ما لقيت بوت بهذا المعرف/الاسم: ${botQuery}`);
+    const prefixes = ['+', '.', '!', '-', '$', '?', '/'];
+    const commandHits = new Map();
+    const channels = channel && isTextChannel(channel)
+        ? [channel]
+        : [...guild.channels.cache.values()].filter(isTextChannel).slice(0, 8);
+    for (const ch of channels) {
+        const fetched = await ch.messages.fetch({ limit: Math.min(Number(limit), 100) }).catch(() => null);
+        if (!fetched) continue;
+        for (const msg of fetched.values()) {
+            const text = String(msg.content || '').trim();
+            if (!text) continue;
+            const authorIsBot = msg.author?.id === bot.id;
+            const mentionsBot = msg.mentions?.users?.has?.(bot.id);
+            const looksCommand = prefixes.some(p => text.startsWith(p));
+            if (!authorIsBot && !mentionsBot && !looksCommand) continue;
+            const first = text.split(/\s+/)[0].slice(0, 80);
+            if (!first) continue;
+            const row = commandHits.get(first) || { command: first, count: 0, samples: [] };
+            row.count += 1;
+            if (row.samples.length < 3) row.samples.push({ channel: ch.name, author_id: msg.author?.id, content: text.slice(0, 160) });
+            commandHits.set(first, row);
+        }
+    }
+    const knownGames = [
+        { name: 'مافيا', command: '+مافيا', bot_id: '1508592252220477651' },
+        { name: 'الجاسوس', command: '+الجاسوس', bot_id: '1508592252220477651' },
+        { name: 'محبس', command: '+محبس', bot_id: '1508592252220477651' },
+        { name: 'روليت', command: '.روليت', bot_id: '1006332825571692544' },
+        { name: 'لغم', command: '.لغم', bot_id: '1006332825571692544' },
+        { name: 'غميضه', command: '.غميضه', bot_id: '1006332825571692544' },
+        { name: 'حجرة', command: '.حجرة', bot_id: '1006332825571692544' },
+        { name: 'سباق', command: '.سباق', bot_id: '1006332825571692544' },
+        { name: 'كراسي', command: '.كراسي', bot_id: '1006332825571692544' },
+    ].filter(g => g.bot_id === bot.id);
+    return {
+        bot: { id: bot.id, username: bot.user.username, display: bot.displayName, roles: bot.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name) },
+        inferred_prefixes: [...new Set([...commandHits.keys()].map(c => c[0]).filter(c => prefixes.includes(c)))],
+        known_games: knownGames,
+        observed_commands: [...commandHits.values()].sort((a, b) => b.count - a.count).slice(0, 40),
+        note: 'هذه نتيجة استنتاج من الرسائل الحديثة والخرائط المعروفة؛ للبوتات التي تعتمد Slash قد تظهر أوامر أقل إذا لم توجد رسائل حديثة.'
+    };
+}
+
+/** يحلل بوت ويقترح طريقة التعامل معه */
+async function toolAnalyzeBot(guild, botQuery, channel = null) {
+    const commands = await toolGetBotCommands(guild, botQuery, channel, 200);
+    if (commands.ok === false) return commands;
+    const prefixes = commands.inferred_prefixes?.length ? commands.inferred_prefixes : ['غير واضح'];
+    return {
+        ...commands,
+        strategy: [
+            `ابدأ بتجربة أوامر المساعدة الشائعة: ${prefixes.map(p => `${p}help`).join(' / ')}`,
+            'راقب رسائل البوت بعد كل أمر ولا تكرر الإرسال بسرعة.',
+            'إذا ظهر لوبي أو أزرار تفاعلية، اقرأ نص الرسالة وحدد المطلوب قبل الخطوة التالية.',
+            'لألعاب الفعاليات: انتظر كلمات الفوز/النتيجة ثم استخدم forward/التسليمات بدل نسخ النص.'
+        ],
+    };
+}
+
 // ══════════════════════════════════════════════════════════════
 //  Exports
 // ══════════════════════════════════════════════════════════════
@@ -589,4 +656,6 @@ module.exports = {
     toolGetNitroBoosters,
     toolGetBotList,
     toolGetMemberInfo,
+    toolGetBotCommands,
+    toolAnalyzeBot,
 };
