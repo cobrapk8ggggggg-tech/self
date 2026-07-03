@@ -236,6 +236,29 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${deleted}** رسالة للعضو **${displayName}**`);
         }
 
+
+        if (a === 'delete_member_messages_all_channels') {
+            const memberQ = String(params.member || '').trim();
+            if (!memberQ) return _err('❌ حدد العضو (member).');
+            const member = await findMember(guild, memberQ, client).catch(() => null);
+            const memberId = member?.id || memberQ;
+            const perChannelLimit = Math.min(Number(params.limit_per_channel || 100), 500);
+            let totalDeleted = 0;
+            let scannedChannels = 0;
+            const failures = [];
+            for (const ch of guild.channels.cache.values()) {
+                if (!isTextChannel(ch)) continue;
+                scannedChannels++;
+                try {
+                    totalDeleted += await _safePurge(ch, perChannelLimit, msg => msg.author?.id === String(memberId));
+                    await new Promise(r => setTimeout(r, 750));
+                } catch (e) {
+                    failures.push(`${ch.name}: ${e.message}`);
+                }
+            }
+            return _ok(`✅ تم حذف **${totalDeleted}** رسالة للعضو من **${scannedChannels}** قناة ممكنة.`, { deleted: totalDeleted, channels: scannedChannels, failures: failures.slice(0, 5) });
+        }
+
         // ────────────────────────────────
         //  رتب
         // ────────────────────────────────
@@ -440,8 +463,15 @@ async function executeAction(guild, channel, action, params, client) {
             }
             const content = String(params.content || '').trim();
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
-            const sent = await targetCh.send(content.slice(0, 2000));
-            return _ok(`✅ تم إرسال الرسالة في **#${targetCh.name}** (${guild.name})`, { message_id: sent.id });
+            let sent;
+            if (params.reply_to) {
+                const ref = await targetCh.messages.fetch(String(params.reply_to)).catch(() => null);
+                if (!ref) return _err('❌ لم أجد رسالة reply_to في القناة المحددة.');
+                sent = await ref.reply(content.slice(0, 2000));
+            } else {
+                sent = await targetCh.send(content.slice(0, 2000));
+            }
+            return _ok(`✅ تم إرسال الرسالة في **#${targetCh.name}** (${guild.name})`, { message_id: sent.id, replied_to: params.reply_to || null });
         }
 
         if (a === 'mention_everyone') {
