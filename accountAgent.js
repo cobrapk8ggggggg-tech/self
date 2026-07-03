@@ -35,6 +35,19 @@ const memory = new Map();
 const activity = new Map();
 const autoLocks = new Map();
 
+
+function humanizeDisplayName(name) {
+    const raw = String(name || '').trim();
+    const compact = raw
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[._~`^*|\[\]{}()<>،,؛:;!؟?\-_=+]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (/^s\s*u\s*k\s*u\s*n\s*a$/i.test(compact)) return 'سوكونا';
+    return compact || raw || 'صاحب الحساب';
+}
+
 function mergeSettings(doc) {
     return { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
 }
@@ -99,7 +112,7 @@ async function generateAiReply({ client, runtime, sourceMessage, controlMessage,
     const botContext = guild ? await buildBotContext(client, guild, channel, runtime.agentId, runtime.allowed_channels_cache) : '[DM Context]';
     const key = `${runtime.agentId}:${guild?.id || 'dm'}:${channel.id}`;
     let cs = memory.get(key) || await db_load_channel_session(guild?.id || 'dm', channel.id, runtime.agentId) || { session_id: null, parent_message_id: null, mode: 'account', thinking: false };
-    const result = await runAgent(guild, channel, sourceMessage.content || '', userInfo, botContext, client.user.displayName || client.user.username, cs.session_id, cs.parent_message_id, guild?.id || 'dm', 'account', false, 'owner', client, runtime);
+    const result = await runAgent(guild, channel, sourceMessage.content || '', userInfo, botContext, humanizeDisplayName(client.user.displayName || client.user.username), cs.session_id, cs.parent_message_id, guild?.id || 'dm', 'account', false, 'owner', client, runtime);
     cs = { ...cs, session_id: result.newSid, parent_message_id: result.newPmid };
     memory.set(key, cs);
     if (result.newSid) await db_save_channel_session(guild?.id || 'dm', channel.id, result.newSid, result.newPmid, 'account', false, runtime.agentId).catch(() => {});
@@ -215,4 +228,4 @@ async function summarizeMemory(agentId, guildId, limit = 10) {
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
-module.exports = { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping, rememberActivity, maybeAutoEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
+module.exports = { humanizeDisplayName, getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping, rememberActivity, maybeAutoEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
