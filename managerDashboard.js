@@ -511,39 +511,38 @@ async function handleDashboardInteraction(interaction, manager) {
             await interaction.update({ embeds: [embed('❌ الوكيل غير نشط', linesBlock(['يجب أن يكون الوكيل في حالة تشغيل (Runtime نشط) لتنفيذ الفعاليات.']), COLORS.danger)], components: [] });
             return true;
         }
-        const guild = interaction.guild;
-        if (!guild) {
-            await interaction.update({ embeds: [embed('❌ خطأ', linesBlock(['هذا الأمر يعمل فقط داخل السيرفرات.']), COLORS.danger)], components: [] });
-            return true;
-        }
+
+        // استخدام runtime.client لجلب القناة من منظور الوكيل
         const { getAccountSettings } = require('./accountAgent');
-        const settings = await getAccountSettings(agentId, guild.id);
+        const settings = await getAccountSettings(agentId, interaction.guildId);
         const channelId = settings.event_channel_id || interaction.channelId;
-        const channel = guild.channels.cache.get(channelId);
+        const channel = runtime.client.channels.cache.get(channelId);
         if (!channel || !channel.isTextBased()) {
-            await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو ليست قناة نصية.']), COLORS.danger)], components: [] });
+            await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو ليست قناة نصية من منظور الوكيل.']), COLORS.danger)], components: [] });
             return true;
         }
 
-        // إعلام المستخدم بأن الفعاليات بدأت
+        // نحتاج guild من منظور الوكيل أيضاً
+        const guild = runtime.client.guilds.cache.get(interaction.guildId);
+        if (!guild) {
+            await interaction.update({ embeds: [embed('❌ خطأ', linesBlock(['الوكيل لا يرى هذا السيرفر.']), COLORS.danger)], components: [] });
+            return true;
+        }
+
         await interaction.update({ embeds: [embed('⏳ جاري تشغيل الفعاليات', linesBlock([`الوكيل: **${agent.name || agentId}**`, `عدد الفعاليات: **${count}**`, 'سيتم إرسال الفعالية التالية بعد ظهور نتيجة الفعالية السابقة.']), COLORS.info)], components: [] });
 
-        // تنفيذ الفعاليات بشكل متسلسل مع انتظار رسالة الفوز
         try {
             let completed = 0;
             for (let i = 0; i < count; i++) {
                 const game = await startEvent(runtime.client, guild, channel, runtime, null, i === 0);
-                // انتظار رسالة من بوت اللعبة تحتوي على فوز
                 try {
                     await channel.awaitMessages({
                         filter: m => m.author.bot && WIN_RE.test(m.content),
                         max: 1,
-                        time: 300_000, // 5 دقائق
+                        time: 300_000,
                         errors: ['time']
                     });
-                } catch (e) {
-                    // انتهى الوقت بدون رسالة فوز، نكمل على أية حال
-                }
+                } catch (e) {}
                 completed++;
             }
             await interaction.followUp({ embeds: [embed('✅ اكتملت الفعاليات', linesBlock([`تم تشغيل **${completed}** فعالية بنجاح عبر الوكيل **${agent.name || agentId}**`]), COLORS.success)], ephemeral: true });
