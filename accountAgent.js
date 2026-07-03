@@ -286,4 +286,21 @@ async function summarizeMemory(agentId, guildId, limit = 10) {
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
-module.exports = { humanizeDisplayName, getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, runEventSeries, startHumanTyping, rememberActivity, maybeAutoEvent, maybeScheduledEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
+module.exports = {
+    humanizeDisplayName,
+    getAccountSettings,
+    updateAccountSettings,
+    forwardMessage,
+    handleAccountInteraction,
+    handleControlReply,
+    trackGameMessage,
+    startEvent,
+    runEventSeries,
+    startHumanTyping,
+    rememberActivity,
+    maybeAutoEvent,
+    maybeScheduledEvent,
+    summarizeMemory,
+    DEFAULT_ACCOUNT_SETTINGS,
+    WIN_RE
+};
