@@ -266,6 +266,7 @@ async function renderAgent(manager, agentId) {
         button(`${DASH_PREFIX}:agent:${id}:channels`, 'القنوات', ButtonStyle.Secondary, '📡'),
         button(`${DASH_PREFIX}:agent:${id}:conversations`, 'المحادثات', ButtonStyle.Secondary, '💬'),
         button(`${DASH_PREFIX}:agent:${id}:provider`, 'مزود POW', ButtonStyle.Secondary, '⚡'),
+        button(`${DASH_PREFIX}:agent:${id}:user_control`, 'تحكم الحساب', ButtonStyle.Secondary, '🕹️'),
         button(`${DASH_PREFIX}:agent:${id}:notify`, 'الإشعارات', ButtonStyle.Secondary, '🔔'),
         button(`${DASH_PREFIX}:agent:${id}:logs:0`, 'Timeline', ButtonStyle.Secondary, '📜'),
         button(`${DASH_PREFIX}:agent:${id}:delete_confirm`, 'حذف', ButtonStyle.Danger, '🗑️'),
@@ -522,6 +523,18 @@ async function handleDashboardInteraction(interaction, manager) {
             await manager.logAgent(agentId, 'channel_remove', 'تم حذف قناة محادثة من Dashboard', { channel_id: interaction.values[0] });
             return interaction.update(await renderAgentChannels(agentId, interaction.guildId));
         }
+        if (interaction.isChannelSelectMenu() && action === 'dm_forward_channel') {
+            await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set: { dm_forward_channel_id: interaction.values[0], updated_at: new Date() } });
+            manager?.runtimes?.get?.(String(agentId))?.updateControlChannels?.({ dm_forward_channel_id: interaction.values[0] });
+            await manager.logAgent(agentId, 'dm_forward_channel', 'تم تحديث قناة رسائل الخاص لوكيل الحساب', { channel_id: interaction.values[0] });
+            return interaction.update(await renderUserControl(agentId, interaction.guildId));
+        }
+        if (interaction.isChannelSelectMenu() && action === 'mention_forward_channel') {
+            await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set: { mention_forward_channel_id: interaction.values[0], updated_at: new Date() } });
+            manager?.runtimes?.get?.(String(agentId))?.updateControlChannels?.({ mention_forward_channel_id: interaction.values[0] });
+            await manager.logAgent(agentId, 'mention_forward_channel', 'تم تحديث قناة منشنات وكيل الحساب', { channel_id: interaction.values[0] });
+            return interaction.update(await renderUserControl(agentId, interaction.guildId));
+        }
         if (interaction.isStringSelectMenu() && action === 'provider_set') {
             const { set_pow_provider } = require('./utils');
             await set_pow_provider(interaction.guildId, interaction.values[0], agentId);
@@ -542,6 +555,7 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'channels') return updateInteraction(interaction, await renderAgentChannels(agentId, interaction.guildId));
         if (action === 'conversations') return updateInteraction(interaction, await renderAgentConversations(agentId, interaction.guildId));
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
+        if (action === 'user_control') return updateInteraction(interaction, await renderUserControl(agentId, interaction.guildId));
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -577,6 +591,37 @@ async function handleDashboardInteraction(interaction, manager) {
     return false;
 }
 
+
+
+async function renderUserControl(agentId, guildId) {
+    const cfg = require('./config');
+    const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const isUser = String(agent?.token_type || 'bot') === 'user';
+    const emb = embed('🕹️ تحكم وكيل الحساب', linesBlock([
+        `الوكيل: **${agent?.name || 'غير معروف'}**`,
+        `النوع: **${isUser ? 'User Account' : 'Bot Token'}**`,
+        `📩 قناة رسائل الخاص: ${agent?.dm_forward_channel_id ? `<#${agent.dm_forward_channel_id}>` : 'غير محددة'}`,
+        `📣 قناة المنشن/الردود: ${agent?.mention_forward_channel_id ? `<#${agent.mention_forward_channel_id}>` : 'غير محددة'}`,
+        '',
+        isUser ? 'رسائل الخاص والمنشنات ستُحوّل لقنوات التحكم المحددة بدل الرد المباشر.' : 'هذه الصفحة مخصصة لوكلاء الحسابات، ويمكن تجهيزها مسبقاً فقط.',
+    ]), COLORS.info);
+    const components = [
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+                .setCustomId(`${DASH_PREFIX}:agent:${agentId}:dm_forward_channel`)
+                .setPlaceholder('اختر قناة استقبال رسائل الخاص DM')
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+                .setCustomId(`${DASH_PREFIX}:agent:${agentId}:mention_forward_channel`)
+                .setPlaceholder('اختر قناة استقبال المنشنات والردود')
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        ...rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back), button(`${DASH_PREFIX}:agent:${agentId}:user_control`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh)]),
+    ];
+    return { embeds: [emb], components };
+}
 
 async function renderAgentProvider(agentId, guildId) {
     const cfg = require('./config');
