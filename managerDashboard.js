@@ -512,20 +512,18 @@ async function handleDashboardInteraction(interaction, manager) {
             return true;
         }
 
-        // استخدام runtime.client لجلب القناة من منظور الوكيل
+        // ✅ جلب السيرفر والقناة عبر عميل الوكيل (runtime.client) لضمان تنفيذ الفعاليات به
         const { getAccountSettings } = require('./accountAgent');
         const settings = await getAccountSettings(agentId, interaction.guildId);
         const channelId = settings.event_channel_id || interaction.channelId;
-        const channel = runtime.client.channels.cache.get(channelId);
-        if (!channel || !channel.isTextBased()) {
-            await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو ليست قناة نصية من منظور الوكيل.']), COLORS.danger)], components: [] });
-            return true;
-        }
+        
+        const agentGuild = runtime.client.guilds.cache.get(interaction.guildId) 
+                        || await runtime.client.guilds.fetch(interaction.guildId).catch(() => null);
+        const agentChannel = agentGuild?.channels.cache.get(channelId) 
+                        || await runtime.client.channels.fetch(channelId).catch(() => null);
 
-        // نحتاج guild من منظور الوكيل أيضاً
-        const guild = runtime.client.guilds.cache.get(interaction.guildId);
-        if (!guild) {
-            await interaction.update({ embeds: [embed('❌ خطأ', linesBlock(['الوكيل لا يرى هذا السيرفر.']), COLORS.danger)], components: [] });
+        if (!agentChannel || !agentChannel.isTextBased()) {
+            await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو لا يمكن للوكيل رؤيتها/الكتابة فيها.']), COLORS.danger)], components: [] });
             return true;
         }
 
@@ -534,9 +532,12 @@ async function handleDashboardInteraction(interaction, manager) {
         try {
             let completed = 0;
             for (let i = 0; i < count; i++) {
-                const game = await startEvent(runtime.client, guild, channel, runtime, null, i === 0);
+                // تمرير agentGuild و agentChannel بدلاً من guild و channel الأصلية
+                const game = await startEvent(runtime.client, agentGuild, agentChannel, runtime, null, i === 0);
+                
+                // استخدام قناة الوكيل للاستماع
                 try {
-                    await channel.awaitMessages({
+                    await agentChannel.awaitMessages({
                         filter: m => m.author.bot && WIN_RE.test(m.content),
                         max: 1,
                         time: 300_000,
