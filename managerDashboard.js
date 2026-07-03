@@ -305,13 +305,17 @@ function createAgentModal(type) {
     return modal;
 }
 
+function safeModalValue(value, max) {
+    return String(value || '').slice(0, max);
+}
+
 function editAgentModal(agent) {
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:edit_modal:${agent._id}`).setTitle('تعديل إعدادات الوكيل');
     modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80).setValue(String(agent.name || ''))),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500).setValue(String(agent.personality || ''))),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel('Discord Token جديد — اتركه فارغًا للإبقاء عليه').setStyle(TextInputStyle.Short).setRequired(false)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token جديد — اتركه فارغًا للإبقاء عليه').setStyle(TextInputStyle.Short).setRequired(false)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80).setValue(safeModalValue(agent.name, 80))),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500).setValue(safeModalValue(agent.personality, 1500))),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel('Discord Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
     );
     return modal;
 }
@@ -513,13 +517,13 @@ async function handleDashboardInteraction(interaction, manager) {
             const { updateAccountSettings } = require('./accountAgent');
             await updateAccountSettings(agentId, interaction.guildId, { event_role_id: interaction.values[0] });
             await manager.logAgent(agentId, 'account_settings', 'تم تحديث رول فعاليات الحساب الحقيقي', { role_id: interaction.values[0] });
-            return interaction.update(await renderAccountSettings(agentId, interaction.guildId));
+            return interaction.update(await renderAccountAdvanced(agentId, interaction.guildId));
         }
         if (interaction.isStringSelectMenu() && action === 'acct_mode') {
             const { updateAccountSettings } = require('./accountAgent');
             await updateAccountSettings(agentId, interaction.guildId, { mode: interaction.values[0] });
             await manager.logAgent(agentId, 'account_settings', 'تم تحديث وضع فعاليات الحساب الحقيقي', { mode: interaction.values[0] });
-            return interaction.update(await renderAccountSettings(agentId, interaction.guildId));
+            return interaction.update(await renderAccountAdvanced(agentId, interaction.guildId));
         }
         if (interaction.isChannelSelectMenu() && action === 'notify_channel') {
             await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set: { notification_channel_id: interaction.values[0], updated_at: new Date() } });
@@ -563,6 +567,7 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'conversations') return updateInteraction(interaction, await renderAgentConversations(agentId, interaction.guildId));
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
         if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
+        if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -638,6 +643,30 @@ async function renderAccountSettings(agentId, guildId) {
         new ActionRowBuilder().addComponents(
             new ChannelSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_deliveries`).setPlaceholder('حدد قناة التسليمات').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
         ),
+        ...rowsFromButtons([
+            button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'الرول والوضع', ButtonStyle.Primary, '⚙️'),
+            button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back),
+            button(`${DASH_PREFIX}:agent:${agentId}:account`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
+        ]),
+    ] };
+}
+
+
+async function renderAccountAdvanced(agentId, guildId) {
+    const cfg = require('./config');
+    const { getAccountSettings } = require('./accountAgent');
+    const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const settings = guildId ? await getAccountSettings(agentId, guildId).catch(() => ({})) : {};
+    const emb = embed('⚙️ إعدادات متقدمة للحساب والفعاليات', linesBlock([
+        `الوكيل: **${agent?.name || 'غير معروف'}**`,
+        `🟢 رول منشن الفعاليات: ${settings.event_role_id ? `<@&${settings.event_role_id}>` : 'غير محدد'}`,
+        `⚙️ الوضع الحالي: **${settings.mode === 'auto' ? 'تلقائي' : 'يدوي'}**`,
+        `📣 أول فعالية: **${settings.first_event_announces_everyone ? '@everyone' : 'رول الفعاليات'}**`,
+        `⏱️ انتظار اللوبي: **${Math.round(Number(settings.event_wait_ms || 40000) / 1000)}s**`,
+        '',
+        'تم فصل هذه الصفحة حتى لا تتجاوز واجهة Discord حد 5 صفوف Components.',
+    ]), COLORS.live);
+    return { embeds: [emb], components: [
         new ActionRowBuilder().addComponents(
             new RoleSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_role`).setPlaceholder('حدد رول منشن الفعاليات'),
         ),
@@ -648,8 +677,8 @@ async function renderAccountSettings(agentId, guildId) {
             ]),
         ),
         ...rowsFromButtons([
-            button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back),
-            button(`${DASH_PREFIX}:agent:${agentId}:account`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
+            button(`${DASH_PREFIX}:agent:${agentId}:account`, 'رجوع للحساب', ButtonStyle.Secondary, ICONS.back),
+            button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
         ]),
     ] };
 }
