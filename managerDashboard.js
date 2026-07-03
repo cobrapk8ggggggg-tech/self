@@ -1,4 +1,4 @@
-م
+
 'use strict';
 
 const { ObjectId } = require('mongodb');
