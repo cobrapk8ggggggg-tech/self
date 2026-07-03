@@ -512,7 +512,6 @@ async function handleDashboardInteraction(interaction, manager) {
             return true;
         }
 
-        // ✅ جلب السيرفر والقناة عبر عميل الوكيل (runtime.client) لضمان تنفيذ الفعاليات به
         const { getAccountSettings } = require('./accountAgent');
         const settings = await getAccountSettings(agentId, interaction.guildId);
         const channelId = settings.event_channel_id || interaction.channelId;
@@ -522,7 +521,7 @@ async function handleDashboardInteraction(interaction, manager) {
         const agentChannel = agentGuild?.channels.cache.get(channelId) 
                         || await runtime.client.channels.fetch(channelId).catch(() => null);
 
-        if (!agentChannel || !agentChannel.isTextBased()) {
+        if (!agentChannel || !agentChannel.send) {
             await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو لا يمكن للوكيل رؤيتها/الكتابة فيها.']), COLORS.danger)], components: [] });
             return true;
         }
@@ -532,10 +531,7 @@ async function handleDashboardInteraction(interaction, manager) {
         try {
             let completed = 0;
             for (let i = 0; i < count; i++) {
-                // تمرير agentGuild و agentChannel بدلاً من guild و channel الأصلية
                 const game = await startEvent(runtime.client, agentGuild, agentChannel, runtime, null, i === 0);
-                
-                // استخدام قناة الوكيل للاستماع
                 try {
                     await agentChannel.awaitMessages({
                         filter: m => m.author.bot && WIN_RE.test(m.content),
