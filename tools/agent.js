@@ -139,7 +139,7 @@ async function runAgent(
     client,
     runtime = {},
 ) {
-    const system    = buildSystem(botName, mode, thinking, accessLevel, runtime.personality || '', runtime.tokenType || 'bot');
+    const system    = buildSystem(botName, mode, thinking, accessLevel, runtime.personality || '');
     let curSid      = sessionId;
     let curPmid     = parentMessageId;
     let curPrompt   = (
