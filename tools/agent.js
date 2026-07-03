@@ -52,6 +52,10 @@ const {
     toolGetMemberInfo,
     toolGetBotCommands,
     toolAnalyzeBot,
+    toolServerBlueprint,
+    toolPermissionAudit,
+    toolChannelActivity,
+    toolAgentConfigAudit,
 } = require('./readTools');
 
 const { executeAction } = require('./executeAction');
@@ -115,7 +119,7 @@ function extractJsonObjects(text) {
 //  AGENT LOOP — حلقة الوكيل
 // ══════════════════════════════════════════════════════════════
 
-const MAX_STEPS = 12;
+const MAX_STEPS = 24;
 
 /**
  * يشغّل Agent Loop الكامل
@@ -240,6 +244,7 @@ async function runAgent(
                 'moderation_overview', 'recent_joins', 'inactive_members', 'role_members', 'channel_permissions',
                 'get_webhooks', 'get_scheduled_events', 'get_threads', 'get_nitro_boosters',
                 'get_bot_list', 'get_member_info', 'get_bot_commands', 'analyze_bot',
+                'server_blueprint', 'permission_audit', 'channel_activity', 'agent_config_audit',
             ];
 
             if (readTools.includes(tool)) {
@@ -286,7 +291,7 @@ async function runAgent(
                         case 'get_roles':
                             result = toolGetRoles(targetGuild); break;
                         case 'get_members':
-                            result = toolGetMembers(targetGuild, params.query || null); break;
+                            result = await toolGetMembers(targetGuild, params.query || null, params); break;
                         case 'server_info':
                             result = toolServerInfo(targetGuild); break;
                         case 'list_all_guilds':
@@ -316,7 +321,7 @@ async function runAgent(
                         case 'inactive_members':
                             result = toolInactiveMembers(targetGuild, Number(params.days || 30), Number(params.limit || 50)); break;
                         case 'role_members':
-                            result = toolRoleMembers(targetGuild, params.role || '', Number(params.limit || 100)); break;
+                            result = await toolRoleMembers(targetGuild, params.role || '', Number(params.limit || 100)); break;
                         case 'channel_permissions':
                             result = toolChannelPermissions(targetGuild, params.channel || null); break;
                         case 'get_webhooks':
@@ -335,6 +340,14 @@ async function runAgent(
                             result = await toolGetBotCommands(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh(), Number(params.limit || 300)); break;
                         case 'analyze_bot':
                             result = await toolAnalyzeBot(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh()); break;
+                        case 'server_blueprint':
+                            result = toolServerBlueprint(targetGuild); break;
+                        case 'permission_audit':
+                            result = toolPermissionAudit(targetGuild); break;
+                        case 'channel_activity':
+                            result = await toolChannelActivity(targetGuild, Number(params.limit_per_channel || 50)); break;
+                        case 'agent_config_audit':
+                            result = await toolAgentConfigAudit(targetGuild, runtime.agentId || 'default'); break;
                         default:
                             result = _err(`أداة غير مُنفَّذة: ${tool}`);
                     }
@@ -376,7 +389,7 @@ async function runAgent(
     }
 
     return {
-        reply      : '✅ تم.',
+        reply      : '⚠️ وصلت للحد الأعلى من خطوات الأدوات. نفذت ما استطعت، وإذا بقي جزء من الطلب أعد إرساله لأكمل من آخر نتيجة.',
         newSid     : curSid,
         newPmid    : curPmid,
         filesToSend: [],
