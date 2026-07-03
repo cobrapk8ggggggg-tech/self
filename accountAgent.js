@@ -1,0 +1,173 @@
+'use strict';
+
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { isTextChannel, isUserRuntime } = require('./discordAdapter');
+const { runAgent } = require('./tools');
+const { buildBotContext, db_load_channel_session, db_save_channel_session, getAccessLevel } = require('./utils');
+
+const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
+    dm_channel_id: null,
+    mention_channel_id: null,
+    deliveries_channel_id: '1302635629108269177',
+    event_role_id: '1339697461878456381',
+    mode: 'manual',
+    games: [
+        { name: 'مافيا', command: '+مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
+        { name: 'الجاسوس', command: '+الجاسوس', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
+        { name: 'محبس', command: '+محبس', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
+        { name: 'روليت', command: '.روليت', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'لغم', command: '.لغم', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'غميضه', command: '.غميضه', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'حجرة', command: '.حجرة', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'سباق', command: '.سباق', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'كراسي', command: '.كراسي', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+    ],
+});
+
+const WIN_RE = /(فاز|فوز|فوزي|فائزة|فائز|الفائز|الفائزة|ربح|نتيجة|انتهت|انتهى)/i;
+const bridge = new Map();
+const memory = new Map();
+
+function mergeSettings(doc) {
+    return { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
+}
+
+async function getAccountSettings(agentId, guildId) {
+    const cfg = require('./config');
+    const doc = await cfg.settings_col.findOne({ agent_id: String(agentId), guild_id: String(guildId) }).catch(() => null);
+    return mergeSettings(doc);
+}
+
+async function updateAccountSettings(agentId, guildId, patch) {
+    const cfg = require('./config');
+    await cfg.settings_col.updateOne(
+        { agent_id: String(agentId), guild_id: String(guildId) },
+        { $set: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`account.${k}`, v])), $setOnInsert: { created_at: new Date() } },
+        { upsert: true },
+    );
+}
+
+function startHumanTyping(channel, text) {
+    const length = String(text || '').length;
+    const delay = Math.min(12000, Math.max(800, length * 45));
+    let stopped = false;
+    const tick = () => { if (!stopped && channel?.sendTyping) channel.sendTyping().catch(() => {}); };
+    tick();
+    const timer = setInterval(tick, 7000);
+    return new Promise(resolve => setTimeout(() => { stopped = true; clearInterval(timer); resolve(); }, delay));
+}
+
+async function forwardMessage(client, message, targetChannelId, kind) {
+    const target = await client.channels.fetch(String(targetChannelId)).catch(() => null);
+    if (!target || !isTextChannel(target)) return false;
+    const emb = new EmbedBuilder()
+        .setTitle(kind === 'dm' ? '📩 رسالة خاصة للحساب' : '🔔 منشن/رد على الحساب')
+        .setDescription((message.content || '—').slice(0, 3900))
+        .addFields(
+            { name: 'المرسل', value: `${message.author.tag || message.author.username} (${message.author.id})`, inline: false },
+            { name: 'الأصل', value: message.url || `${message.channel?.id || 'DM'} / ${message.id}`, inline: false },
+            { name: 'طريقة التحكم', value: 'رد على هذه الرسالة لإرسال رد مباشر. ابدأ الرد بـ `!noreply` للإرسال بدون Reply، أو `!ai` ليولّد الذكاء الاصطناعي الرد.', inline: false },
+        )
+        .setTimestamp();
+    const sent = await target.send({ embeds: [emb], components: safeRows(kind) }).catch(() => null);
+    if (!sent) return false;
+    bridge.set(sent.id, { kind, source_channel_id: message.channel.id, source_message_id: message.id, guild_id: message.guild?.id || null, author_id: message.author.id });
+    return true;
+}
+
+function safeRows(kind) {
+    try {
+        return [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`acct:${kind}:ai_reply`).setLabel('AI Reply').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`acct:${kind}:ai_noreply`).setLabel('AI No Reply').setStyle(ButtonStyle.Secondary),
+        )];
+    } catch (_) { return []; }
+}
+
+async function generateAiReply({ client, runtime, sourceMessage, controlMessage, replyMode }) {
+    const guild = sourceMessage.guild || controlMessage.guild;
+    const channel = sourceMessage.channel;
+    const userInfo = `[معلومات المستخدم]\n  الاسم: ${sourceMessage.author.username}\n  الـ ID: ${sourceMessage.author.id}\n  المصدر: ${sourceMessage.guild ? '#' + sourceMessage.channel.name : 'DM'}\n`;
+    const botContext = guild ? await buildBotContext(client, guild, channel, runtime.agentId, runtime.allowed_channels_cache) : '[DM Context]';
+    const key = `${runtime.agentId}:${guild?.id || 'dm'}:${channel.id}`;
+    let cs = memory.get(key) || await db_load_channel_session(guild?.id || 'dm', channel.id, runtime.agentId) || { session_id: null, parent_message_id: null, mode: 'account', thinking: false };
+    const result = await runAgent(guild, channel, sourceMessage.content || '', userInfo, botContext, client.user.displayName || client.user.username, cs.session_id, cs.parent_message_id, guild?.id || 'dm', 'account', false, 'owner', client, runtime);
+    cs = { ...cs, session_id: result.newSid, parent_message_id: result.newPmid };
+    memory.set(key, cs);
+    if (result.newSid) await db_save_channel_session(guild?.id || 'dm', channel.id, result.newSid, result.newPmid, 'account', false, runtime.agentId).catch(() => {});
+    const text = result.reply || 'تمام';
+    await startHumanTyping(channel, text);
+    return replyMode === 'reply' ? sourceMessage.reply(text.slice(0, 2000)) : channel.send(text.slice(0, 2000));
+}
+
+async function handleAccountInteraction(client, interaction, runtime) {
+    const meta = bridge.get(interaction.message?.id);
+    if (!meta || !interaction.customId?.startsWith('acct:')) return false;
+    const sourceChannel = await client.channels.fetch(meta.source_channel_id).catch(() => null);
+    const sourceMessage = await sourceChannel?.messages?.fetch?.(meta.source_message_id).catch(() => null);
+    if (!sourceMessage) {
+        await interaction.reply({ content: '❌ لم أجد الرسالة الأصلية.', ephemeral: true }).catch(() => {});
+        return true;
+    }
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    const replyMode = interaction.customId.endsWith('ai_noreply') ? 'send' : 'reply';
+    await generateAiReply({ client, runtime, sourceMessage, controlMessage: interaction.message, replyMode });
+    await interaction.editReply({ content: '✅ تم إرسال رد الذكاء الاصطناعي.' }).catch(() => {});
+    return true;
+}
+
+async function handleControlReply(client, message, runtime) {
+    if (!message.reference?.messageId || message.author.id === client.user.id) return false;
+    const ref = await message.fetchReference().catch(() => null);
+    const meta = ref ? bridge.get(ref.id) : null;
+    if (!meta) return false;
+    const sourceChannel = await client.channels.fetch(meta.source_channel_id).catch(() => null);
+    const sourceMessage = await sourceChannel?.messages?.fetch?.(meta.source_message_id).catch(() => null);
+    if (!sourceMessage) return false;
+    const raw = String(message.content || '').trim();
+    const noReply = raw.startsWith('!noreply');
+    const ai = raw.startsWith('!ai');
+    if (ai) await generateAiReply({ client, runtime, sourceMessage, controlMessage: message, replyMode: noReply ? 'send' : 'reply' });
+    else {
+        const text = raw.replace(/^!noreply\s*/i, '').trim();
+        if (!text) return true;
+        await startHumanTyping(sourceMessage.channel, text);
+        if (noReply) await sourceMessage.channel.send(text.slice(0, 2000));
+        else await sourceMessage.reply(text.slice(0, 2000));
+    }
+    await message.react('☑️').catch(() => {});
+    return true;
+}
+
+async function trackGameMessage(client, message, runtime) {
+    if (!message.guild || !message.author?.bot) return false;
+    const settings = await getAccountSettings(runtime.agentId, message.guild.id);
+    if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
+    if (!WIN_RE.test(message.content || '')) return false;
+    const deliveries = await client.channels.fetch(settings.deliveries_channel_id).catch(() => null);
+    if (!deliveries || !isTextChannel(deliveries)) return false;
+    const forwarded = await message.forward(deliveries).catch(() => null);
+    await remember(runtime.agentId, message.guild.id, { type: 'game_result', bot_id: message.author.id, message_id: message.id, forwarded_id: forwarded?.id || null, content: (message.content || '').slice(0, 500) });
+    return true;
+}
+
+async function remember(agentId, guildId, event) {
+    const cfg = require('./config');
+    await cfg.logs_col.insertOne({ agent_id: String(agentId), guild_id: String(guildId), type: 'account_memory', message: event.type, extra: event, created_at: new Date() }).catch(() => {});
+}
+
+async function startEvent(client, guild, channel, runtime, gameName = null, first = false) {
+    const settings = await getAccountSettings(runtime.agentId, guild.id);
+    const games = settings.games;
+    const last = await require('./config').logs_col.find({ agent_id: String(runtime.agentId), guild_id: String(guild.id), type: 'account_memory', message: 'event_start' }).sort({ created_at: -1 }).limit(3).toArray().catch(() => []);
+    const recent = new Set(last.map(x => x.extra?.game));
+    const game = games.find(g => gameName && g.name.includes(gameName)) || games.find(g => !recent.has(g.name)) || games[0];
+    const reward = first ? game.first_reward : game.reward;
+    await channel.send({ content: `# ${game.name} ${reward}\n<@&${settings.event_role_id}>`, allowedMentions: { roles: [settings.event_role_id], parse: [] } });
+    await new Promise(r => setTimeout(r, 40000));
+    await channel.send(game.command);
+    await remember(runtime.agentId, guild.id, { type: 'event_start', game: game.name, command: game.command, bot_id: game.bot_id, channel_id: channel.id, by: client.user.id });
+    return game;
+}
+
+module.exports = { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping };
