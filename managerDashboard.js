@@ -535,13 +535,12 @@ async function handleDashboardInteraction(interaction, manager) {
                 const game = await startEvent(runtime.client, guild, channel, runtime, null, i === 0);
                 // انتظار رسالة من بوت اللعبة تحتوي على فوز
                 try {
-                    const collected = await channel.awaitMessages({
+                    await channel.awaitMessages({
                         filter: m => m.author.bot && WIN_RE.test(m.content),
                         max: 1,
                         time: 300_000, // 5 دقائق
                         errors: ['time']
                     });
-                    // تم استلام رسالة الفوز، يمكن متابعة التالية
                 } catch (e) {
                     // انتهى الوقت بدون رسالة فوز، نكمل على أية حال
                 }
