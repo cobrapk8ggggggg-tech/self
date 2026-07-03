@@ -80,6 +80,7 @@ const {
 } = require('./discordAdapter');
 
 const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
+const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent } = require('./accountAgent');
 
 function agentRuntimeCommands() {
     const channelOption = (option) => option
@@ -144,6 +145,29 @@ function agentRuntimeCommands() {
         new SlashCommandBuilder()
             .setName('الرتبة-الحالية')
             .setDescription('عرض رتبة التحكم الحالية لهذا الوكيل'),
+        new SlashCommandBuilder()
+            .setName('حساب-خاص')
+            .setDescription('تحديد قناة تحويل رسائل الخاص للحساب الحقيقي')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('حساب-منشن')
+            .setDescription('تحديد قناة تحويل المنشن/الردود للحساب الحقيقي')
+            .addStringOption(channelOption),
+        new SlashCommandBuilder()
+            .setName('فعاليات-وضع')
+            .setDescription('تبديل وضع فعاليات الحساب الحقيقي')
+            .addStringOption(option => option
+                .setName('mode')
+                .setDescription('الوضع')
+                .setRequired(true)
+                .addChoices({ name: 'تلقائي', value: 'auto' }, { name: 'يدوي', value: 'manual' })),
+        new SlashCommandBuilder()
+            .setName('ابدأ-فعالية')
+            .setDescription('بدء فعالية لعبة عبر الحساب الحقيقي')
+            .addStringOption(option => option
+                .setName('game')
+                .setDescription('اسم اللعبة')
+                .setRequired(false)),
         new SlashCommandBuilder()
             .setName('مزود-باو')
             .setDescription('تحديد مزود POW لهذا الوكيل')
@@ -249,6 +273,10 @@ client.once('ready', async () => {
 //  حدث INTERACTION (للأوامر + Autocomplete)
 // ══════════════════════════════════════════════════════════════
 client.on('interactionCreate', async (interaction) => {
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    if (interaction.customId?.startsWith?.('acct:')) {
+        if (await handleAccountInteraction(client, interaction, runtimeContext).catch((e) => { console.error('[Account Interaction]', e); return false; })) return;
+    }
     // ── Autocomplete ──
     if (interaction.isAutocomplete()) {
         if (!interaction.guild) return;
@@ -301,7 +329,11 @@ client.on('interactionCreate', async (interaction) => {
                 `## ⚙️ إعدادات (أدمن فقط)\n` +
                 `**/رتبة-التحكم** — حدد رتبة الإدارة\n` +
                 `**/الرتبة-الحالية** — عرض رتبة التحكم\n` +
-                `**/مزود-باو** — تبديل مزود POW\n\n` +
+                `**/مزود-باو** — تبديل مزود POW\n` +
+                `**/حساب-خاص** — قناة تحويل رسائل الخاص للحساب الحقيقي\n` +
+                `**/حساب-منشن** — قناة تحويل المنشن/الردود للحساب الحقيقي\n` +
+                `**/فعاليات-وضع** — تلقائي/يدوي للفعاليات\n` +
+                `**/ابدأ-فعالية** — بدء لعبة من قائمة الألعاب المحددة\n\n` +
                 `## 🧠 قدرات البوت\n` +
                 `**قراءة:** قنوات، رتب، أعضاء، رسائل، تدقيق، دعوات، بانات، إيموجيات، ملصقات، ثريدات، ويبهوكس، فعاليات، نيترو بوسترز، قائمة البوتات، معلومات عضو تفصيلية، فويس\n` +
                 `**إدارة:** إنشاء/حذف/تعديل قنوات ورتب، منح/سحب رتب، كيك/بان/فك بان، تايم آوت، تغيير نكنيم، صلاحيات قنوات **لعضو بعينه بدون رتبة** ✨، سلو مود، قفل/فتح قناة، ثريد، ويبهوك، تصويت (poll)، استنساخ سيرفر\n\n` +
@@ -456,6 +488,43 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
+
+        else if (commandName === 'حساب-خاص' || commandName === 'حساب-منشن') {
+            if (!member.permissions.has('Administrator')) {
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            const chanValue = interaction.options.getString('قناة', true);
+            const ch = resolveChannelValue(guild, chanValue);
+            if (!ch) {
+                await interaction.reply({ content: '❌ ما لقيت القناة.' });
+                return;
+            }
+            const key = commandName === 'حساب-خاص' ? 'dm_channel_id' : 'mention_channel_id';
+            await updateAccountSettings(agentId, guild.id, { [key]: ch.id });
+            await interaction.reply({ content: `✅ تم تحديد **#${ch.name}** لقناة ${commandName === 'حساب-خاص' ? 'الخاص' : 'المنشن/الردود'} للحساب الحقيقي.` });
+        }
+
+        else if (commandName === 'فعاليات-وضع') {
+            if (!member.permissions.has('Administrator')) {
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            const mode = interaction.options.getString('mode', true);
+            await updateAccountSettings(agentId, guild.id, { mode });
+            await interaction.reply({ content: `✅ وضع الفعاليات الآن: **${mode === 'auto' ? 'تلقائي' : 'يدوي'}**` });
+        }
+
+        else if (commandName === 'ابدأ-فعالية') {
+            if (!member.permissions.has('Administrator')) {
+                await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            await interaction.deferReply({ ephemeral: true }).catch(() => {});
+            const game = await startEvent(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality }, interaction.options.getString('game'), true);
+            await interaction.editReply({ content: `✅ بدأت فعالية **${game.name}** بالأمر **${game.command}**.` }).catch(() => {});
+        }
+
         else if (commandName === 'مزود-باو') {
             if (!member.permissions.has('Administrator')) {
                 await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
@@ -482,10 +551,27 @@ client.on('interactionCreate', async (interaction) => {
 //  حدث MESSAGE — الرد على الرسائل
 // ══════════════════════════════════════════════════════════════
 client.on('messageCreate', async (message) => {
-    // تجاهل رسائل البوت
+    // تجاهل رسائل الحساب نفسه
     if (message.author.id === client.user.id) return;
-    // تجاهل الرسائل خارج السيرفر
-    if (!message.guild) return;
+
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    if (await handleControlReply(client, message, runtimeContext).catch(() => false)) return;
+
+    // رسائل الخاص للحساب الحقيقي تُحوّل إلى قناة التحكم المحددة.
+    if (!message.guild) {
+        if (tokenType === 'user') {
+            for (const guild of client.guilds.cache.values()) {
+                const settings = await getAccountSettings(agentId, guild.id);
+                if (settings.dm_channel_id) {
+                    await forwardMessage(client, message, settings.dm_channel_id, 'dm');
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    await trackGameMessage(client, message, runtimeContext).catch(() => false);
 
     // التحقق من منشن البوت أو الرد على رسالته أولاً حتى نعطي تنبيه إعداد واضح بدل الصمت الكامل.
     const isMention = message.mentions.has(client.user.id) && !message.mentions.everyone;
@@ -494,6 +580,11 @@ client.on('messageCreate', async (message) => {
         && (await message.fetchReference().catch(() => null))?.author?.id === client.user.id;
 
     if (!isMention && !isReplyToBot) return;
+
+    if (tokenType === 'user') {
+        const settings = await getAccountSettings(agentId, message.guild.id);
+        if (settings.mention_channel_id) await forwardMessage(client, message, settings.mention_channel_id, 'mention');
+    }
 
     // التحقق من أن القناة ضمن المسموحات
     const allowedIds = await get_allowed_channels(message.guild.id, agentId, allowed_channels_cache);
