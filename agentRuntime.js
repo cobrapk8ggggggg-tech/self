@@ -183,6 +183,30 @@ function startTypingLoop(channel) {
     };
 }
 
+async function forwardToControlChannel(client, channelId, lines) {
+    if (!channelId) return false;
+    const target = await client.channels.fetch(String(channelId)).catch(() => null);
+    if (!target || typeof target.send !== 'function') return false;
+    await target.send({ content: lines.join('\n').slice(0, 2000) }).catch(() => {});
+    return true;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendHumanLikeMessage(message, options, tokenType = 'bot', isReply = false) {
+    const contentLength = String(options?.content || '').length;
+    if (tokenType === 'user' && contentLength > 0) {
+        const delay = Math.min(Math.max(contentLength * 45, 1_200), 12_000);
+        const stopTyping = startTypingLoop(message.channel);
+        await sleep(delay);
+        stopTyping();
+    }
+    if (isReply) return message.reply(options);
+    return message.channel.send(options);
+}
+
 function resolveChannelValue(guild, value) {
     const raw = String(value || '').trim();
     const id = raw.match(/^<#?(\d{15,25})>$/)?.[1] || raw;
@@ -484,8 +508,18 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     // تجاهل رسائل البوت
     if (message.author.id === client.user.id) return;
-    // تجاهل الرسائل خارج السيرفر
-    if (!message.guild) return;
+
+    if (!message.guild) {
+        if (tokenType === 'user' && agentConfig.dm_forward_channel_id) {
+            await forwardToControlChannel(client, agentConfig.dm_forward_channel_id, [
+                `📩 **DM وارد إلى ${client.user.username}**`,
+                `من: **${message.author.username}** (\`${message.author.id}\`)`,
+                `رسالة: ${String(message.content || '—').slice(0, 1500)}`,
+                `> للرد حالياً استخدم الحساب/أدوات الإرسال. واجهة الأزرار التفاعلية ستبنى فوق قناة التحكم هذه.`,
+            ]);
+        }
+        return;
+    }
 
     // التحقق من منشن البوت أو الرد على رسالته أولاً حتى نعطي تنبيه إعداد واضح بدل الصمت الكامل.
     const isMention = message.mentions.has(client.user.id) && !message.mentions.everyone;
@@ -494,6 +528,18 @@ client.on('messageCreate', async (message) => {
         && (await message.fetchReference().catch(() => null))?.author?.id === client.user.id;
 
     if (!isMention && !isReplyToBot) return;
+
+    if (tokenType === 'user' && agentConfig.mention_forward_channel_id) {
+        await forwardToControlChannel(client, agentConfig.mention_forward_channel_id, [
+            `📣 **منشن/رد وارد إلى ${client.user.username}**`,
+            `السيرفر: **${message.guild.name}**`,
+            `القناة: <#${message.channel.id}>`,
+            `من: **${message.author.username}** (\`${message.author.id}\`)`,
+            `معرف الرسالة: \`${message.id}\``,
+            `رسالة: ${String(message.content || '—').slice(0, 1300)}`,
+        ]);
+        return;
+    }
 
     // التحقق من أن القناة ضمن المسموحات
     const allowedIds = await get_allowed_channels(message.guild.id, agentId, allowed_channels_cache);
@@ -623,7 +669,7 @@ client.on('messageCreate', async (message) => {
             thinking,
             accessLevel,
             client,
-            { deepseekToken, personality, agentId },
+            { deepseekToken, personality, agentId, tokenType },
         );
 
         // تحديث الجلسة في RAM و DB
@@ -659,14 +705,14 @@ client.on('messageCreate', async (message) => {
             // إرسال الجزء الأول مع الملفات إن وجدت
             const firstMsgOpts = { content: chunks[0] };
             if (files.length > 0) firstMsgOpts.files = files;
-            await message.reply(firstMsgOpts);
+            await sendHumanLikeMessage(message, firstMsgOpts, tokenType, true);
 
             // باقي الأجزاء
             for (let i = 1; i < chunks.length; i++) {
-                await message.channel.send(chunks[i]);
+                await sendHumanLikeMessage(message, { content: chunks[i] }, tokenType, false);
             }
         } else if (files.length > 0) {
-            await message.reply({ files });
+            await sendHumanLikeMessage(message, { files }, tokenType, true);
         }
 
         // تنظيف الملفات المؤقتة
@@ -726,6 +772,10 @@ client.on('invalidated', () => {
             const ids = await get_allowed_channels(guildId, agentId, allowed_channels_cache);
             allowed_channels_cache.set(`${agentId}:${String(guildId)}`, ids.map(String));
             return ids;
+        },
+        updateControlChannels: (patch = {}) => {
+            if (Object.prototype.hasOwnProperty.call(patch, 'dm_forward_channel_id')) agentConfig.dm_forward_channel_id = patch.dm_forward_channel_id;
+            if (Object.prototype.hasOwnProperty.call(patch, 'mention_forward_channel_id')) agentConfig.mention_forward_channel_id = patch.mention_forward_channel_id;
         },
         stop: () => {
             intentionalStop = true;
