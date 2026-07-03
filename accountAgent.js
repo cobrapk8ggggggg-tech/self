@@ -8,9 +8,14 @@ const { buildBotContext, db_load_channel_session, db_save_channel_session, getAc
 const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     dm_channel_id: null,
     mention_channel_id: null,
+    event_channel_id: null,
     deliveries_channel_id: '1302635629108269177',
     event_role_id: '1339697461878456381',
     mode: 'manual',
+    auto_min_messages_10m: 3,
+    auto_inactivity_minutes: 20,
+    event_wait_ms: 40000,
+    first_event_announces_everyone: true,
     games: [
         { name: 'مافيا', command: '+مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
         { name: 'الجاسوس', command: '+الجاسوس', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
@@ -27,6 +32,8 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
 const WIN_RE = /(فاز|فوز|فوزي|فائزة|فائز|الفائز|الفائزة|ربح|نتيجة|انتهت|انتهى)/i;
 const bridge = new Map();
 const memory = new Map();
+const activity = new Map();
+const autoLocks = new Map();
 
 function mergeSettings(doc) {
     return { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
@@ -66,12 +73,13 @@ async function forwardMessage(client, message, targetChannelId, kind) {
         .addFields(
             { name: 'المرسل', value: `${message.author.tag || message.author.username} (${message.author.id})`, inline: false },
             { name: 'الأصل', value: message.url || `${message.channel?.id || 'DM'} / ${message.id}`, inline: false },
-            { name: 'طريقة التحكم', value: 'رد على هذه الرسالة لإرسال رد مباشر. ابدأ الرد بـ `!noreply` للإرسال بدون Reply، أو `!ai` ليولّد الذكاء الاصطناعي الرد.', inline: false },
+            { name: 'المرفقات', value: message.attachments?.size ? message.attachments.map(a => `[${a.name}](${a.url})`).join('\n').slice(0, 900) : 'لا يوجد', inline: false },
+            { name: 'طريقة التحكم', value: 'رد على هذه الرسالة لإرسال رد مباشر. ابدأ بـ `!noreply` للإرسال بدون Reply، أو `!ai` للرد بالذكاء، أو `!ai !noreply` للذكاء بدون Reply.', inline: false },
         )
         .setTimestamp();
     const sent = await target.send({ embeds: [emb], components: safeRows(kind) }).catch(() => null);
     if (!sent) return false;
-    bridge.set(sent.id, { kind, source_channel_id: message.channel.id, source_message_id: message.id, guild_id: message.guild?.id || null, author_id: message.author.id });
+    bridge.set(sent.id, { kind, source_channel_id: message.channel.id, source_message_id: message.id, guild_id: message.guild?.id || null, author_id: message.author.id, created_at: Date.now() });
     return true;
 }
 
@@ -125,11 +133,11 @@ async function handleControlReply(client, message, runtime) {
     const sourceMessage = await sourceChannel?.messages?.fetch?.(meta.source_message_id).catch(() => null);
     if (!sourceMessage) return false;
     const raw = String(message.content || '').trim();
-    const noReply = raw.startsWith('!noreply');
+    const noReply = /^!ai\s+!noreply|^!noreply/i.test(raw);
     const ai = raw.startsWith('!ai');
     if (ai) await generateAiReply({ client, runtime, sourceMessage, controlMessage: message, replyMode: noReply ? 'send' : 'reply' });
     else {
-        const text = raw.replace(/^!noreply\s*/i, '').trim();
+        const text = raw.replace(/^!ai\s+!noreply\s*/i, '').replace(/^!noreply\s*/i, '').trim();
         if (!text) return true;
         await startHumanTyping(sourceMessage.channel, text);
         if (noReply) await sourceMessage.channel.send(text.slice(0, 2000));
@@ -163,11 +171,48 @@ async function startEvent(client, guild, channel, runtime, gameName = null, firs
     const recent = new Set(last.map(x => x.extra?.game));
     const game = games.find(g => gameName && g.name.includes(gameName)) || games.find(g => !recent.has(g.name)) || games[0];
     const reward = first ? game.first_reward : game.reward;
-    await channel.send({ content: `# ${game.name} ${reward}\n<@&${settings.event_role_id}>`, allowedMentions: { roles: [settings.event_role_id], parse: [] } });
-    await new Promise(r => setTimeout(r, 40000));
+    const mention = first && settings.first_event_announces_everyone ? '@everyone' : `<@&${settings.event_role_id}>`;
+    const allowedMentions = first && settings.first_event_announces_everyone ? { parse: ['everyone'] } : { roles: [settings.event_role_id], parse: [] };
+    await channel.send({ content: `# ${game.name} ${reward}\n${mention}`, allowedMentions });
+    await new Promise(r => setTimeout(r, Number(settings.event_wait_ms || 40000)));
     await channel.send(game.command);
     await remember(runtime.agentId, guild.id, { type: 'event_start', game: game.name, command: game.command, bot_id: game.bot_id, channel_id: channel.id, by: client.user.id });
     return game;
 }
 
-module.exports = { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping };
+
+function rememberActivity(agentId, message) {
+    if (!message.guild || message.author?.bot) return;
+    const key = `${agentId}:${message.guild.id}:${message.channel.id}`;
+    const now = Date.now();
+    const list = (activity.get(key) || []).filter(ts => now - ts < 10 * 60 * 1000);
+    list.push(now);
+    activity.set(key, list);
+}
+
+async function maybeAutoEvent(client, message, runtime) {
+    if (!message.guild || message.author?.bot) return false;
+    const settings = await getAccountSettings(runtime.agentId, message.guild.id);
+    if (settings.mode !== 'auto') return false;
+    const channelId = settings.event_channel_id || message.channel.id;
+    const key = `${runtime.agentId}:${message.guild.id}:${channelId}`;
+    const last = await require('./config').logs_col.findOne({ agent_id: String(runtime.agentId), guild_id: String(message.guild.id), type: 'account_memory', message: 'event_start' }, { sort: { created_at: -1 } }).catch(() => null);
+    const inactiveMs = Number(settings.auto_inactivity_minutes || 20) * 60 * 1000;
+    if (last?.created_at && Date.now() - new Date(last.created_at).getTime() < inactiveMs) return false;
+    const recentCount = (activity.get(key) || []).filter(ts => Date.now() - ts < 10 * 60 * 1000).length;
+    if (recentCount > Number(settings.auto_min_messages_10m || 3)) return false;
+    if (autoLocks.get(key)) return false;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !isTextChannel(channel)) return false;
+    autoLocks.set(key, true);
+    startEvent(client, message.guild, channel, runtime, null, !last).catch(() => {}).finally(() => autoLocks.delete(key));
+    return true;
+}
+
+async function summarizeMemory(agentId, guildId, limit = 10) {
+    const cfg = require('./config');
+    const rows = await cfg.logs_col.find({ agent_id: String(agentId), guild_id: String(guildId), type: 'account_memory' }).sort({ created_at: -1 }).limit(limit).toArray().catch(() => []);
+    return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
+}
+
+module.exports = { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping, rememberActivity, maybeAutoEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
