@@ -80,7 +80,7 @@ const {
 } = require('./discordAdapter');
 
 const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
-const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, rememberActivity, maybeAutoEvent, humanizeDisplayName } = require('./accountAgent');
+const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, runEventSeries, rememberActivity, maybeAutoEvent, maybeScheduledEvent, humanizeDisplayName } = require('./accountAgent');
 
 function agentRuntimeCommands() {
     const channelOption = (option) => option
@@ -175,11 +175,10 @@ function agentRuntimeCommands() {
                 .addChoices({ name: 'تلقائي', value: 'auto' }, { name: 'يدوي', value: 'manual' })),
         new SlashCommandBuilder()
             .setName('ابدأ-فعالية')
-            .setDescription('بدء فعالية لعبة عبر الحساب الحقيقي')
-            .addStringOption(option => option
-                .setName('game')
-                .setDescription('اسم اللعبة')
-                .setRequired(false)),
+            .setDescription('بدء فعالية أو سلسلة فعاليات عبر الحساب الحقيقي')
+            .addStringOption(option => option.setName('game').setDescription('اسم اللعبة').setRequired(false))
+            .addIntegerOption(option => option.setName('عدد').setDescription('عدد الفعاليات المتتالية').setRequired(false).setMinValue(1).setMaxValue(50))
+            .addIntegerOption(option => option.setName('دقائق').setDescription('مدة التشغيل بالدقائق بدلاً من العدد أو معه').setRequired(false).setMinValue(1).setMaxValue(600)),
         new SlashCommandBuilder()
             .setName('مزود-باو')
             .setDescription('تحديد مزود POW لهذا الوكيل')
@@ -551,8 +550,11 @@ client.on('interactionCreate', async (interaction) => {
                 return;
             }
             await interaction.deferReply({ ephemeral: true }).catch(() => {});
-            const game = await startEvent(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality }, interaction.options.getString('game'), true);
-            await interaction.editReply({ content: `✅ بدأت فعالية **${game.name}** بالأمر **${game.command}**.` }).catch(() => {});
+            const count = interaction.options.getInteger('عدد') || null;
+            const minutes = interaction.options.getInteger('دقائق') || null;
+            const result = await runEventSeries(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality }, { gameName: interaction.options.getString('game'), count: count || 1, minutes: minutes || 0, first: true });
+            const names = result.results.map(g => g.name).join('، ') || '—';
+            await interaction.editReply({ content: `${result.ok ? '✅' : '⚠️'} ${result.msg} الألعاب: **${names}**.` }).catch(() => {});
         }
 
         else if (commandName === 'مزود-باو') {
@@ -604,8 +606,9 @@ client.on('messageCreate', async (message) => {
     rememberActivity(agentId, message);
     await trackGameMessage(client, message, runtimeContext).catch(() => false);
     await maybeAutoEvent(client, message, runtimeContext).catch(() => false);
+    await maybeScheduledEvent(client, message, runtimeContext).catch(() => false);
 
-    // التحقق من منشن البوت أو الرد على رسالته أولاً حتى نعطي تنبيه إعداد واضح بدل الصمت الكامل.
+    // التحقق من منشن البوت أو الرد على رسالته.
     const isMention = message.mentions.has(client.user.id) && !message.mentions.everyone;
     const isReplyToBot = message.reference
         && message.reference.messageId
@@ -621,12 +624,6 @@ client.on('messageCreate', async (message) => {
     // التحقق من أن القناة ضمن المسموحات
     const allowedIds = await get_allowed_channels(message.guild.id, agentId, allowed_channels_cache);
     if (!allowedIds.includes(message.channel.id)) {
-        if (message.member?.permissions?.has?.('Administrator')) {
-            const setupHint = allowedIds.length
-                ? 'هذه القناة غير مضافة لقنوات محادثة هذا الوكيل.'
-                : 'لا توجد أي قناة محادثة مضافة لهذا الوكيل بعد.';
-            await message.reply(`${setupHint} استخدم أمر **/قناة-محادثة** أو افتح **/لوحة → الوكلاء → القنوات** ثم أضف هذه القناة.`).catch(() => {});
-        }
         return;
     }
 
