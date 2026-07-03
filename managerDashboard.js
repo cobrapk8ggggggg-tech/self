@@ -44,6 +44,7 @@ const DASHBOARD_COMMAND_ROUTES = Object.freeze({
     'السجلات': 'logs',
     'الاحصائيات': 'stats',
     'النظام': 'system',
+    'تشغيل-يدوي': 'manual_run',
 });
 
 function dashboardCommands() {
@@ -57,6 +58,19 @@ function dashboardCommands() {
         new SlashCommandBuilder().setName('السجلات').setDescription('فتح سجلات وتايملاين النظام'),
         new SlashCommandBuilder().setName('الاحصائيات').setDescription('فتح إحصائيات الوكلاء'),
         new SlashCommandBuilder().setName('النظام').setDescription('فتح حالة النظام والتشغيل'),
+        new SlashCommandBuilder()
+            .setName('تشغيل-يدوي')
+            .setDescription('تشغيل عدد من الفعاليات يدوياً الآن للوكيل')
+            .addIntegerOption(opt =>
+                opt.setName('count')
+                    .setDescription('عدد الفعاليات')
+                    .setRequired(true)
+                    .setMinValue(1)
+                    .setMaxValue(25))
+            .addStringOption(opt =>
+                opt.setName('agent')
+                    .setDescription('معرف الوكيل (اختياري، يترك فارغاً لأول وكيل في السيرفر)')
+                    .setRequired(false)),
     ];
 }
 
@@ -451,6 +465,60 @@ async function handleDashboardInteraction(interaction, manager) {
     if (!await requireAccess(interaction)) return true;
 
     if (commandOk) {
+        if (commandRoute === 'manual_run') {
+            const cfg = require('./config');
+            const { runManual } = require('./accountAgent');
+            const count = interaction.options.getInteger('count', true);
+            let agentId = interaction.options.getString('agent');
+
+            // إذا لم يحدد المستخدم وكيلاً، نبحث عن أول وكيل له إعدادات حساب في هذا السيرفر
+            if (!agentId) {
+                const accountCfg = require('./config'); // نستخدم config للوصول إلى collection
+                const accSettings = await accountCfg.account_settings_col?.findOne?.(
+                    { scope: 'agent', guild_id: String(interaction.guildId) },
+                    { sort: { updated_at: -1 } }
+                ).catch(() => null);
+                if (accSettings) {
+                    agentId = accSettings.agent_id;
+                }
+                if (!agentId) {
+                    await interaction.reply({
+                        embeds: [embed('❌ لا يوجد وكيل', linesBlock(['لم يتم العثور على أي وكيل مرتبط بهذا السيرفر. استخدم الأمر مع تحديد معرف الوكيل.']), COLORS.danger)],
+                        ephemeral: true,
+                    });
+                    return true;
+                }
+            }
+
+            // التحقق من وجود الوكيل
+            const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+            if (!agent) {
+                await interaction.reply({
+                    embeds: [embed('❌ وكيل غير صالح', linesBlock(['المعرف المقدم لا يشير إلى وكيل موجود.']), COLORS.danger)],
+                    ephemeral: true,
+                });
+                return true;
+            }
+
+            // تشغيل الفعاليات اليدوية
+            try {
+                const result = await runManual(agentId, interaction.guildId, count);
+                await interaction.reply({
+                    embeds: [embed('✅ تم التشغيل اليدوي', linesBlock([
+                        `الوكيل: **${agent.name || agentId}**`,
+                        `عدد الفعاليات: **${count}**`,
+                        `الحالة: ${result?.message || 'تم إرسال الأوامر'}`,
+                    ]), COLORS.success)],
+                });
+            } catch (err) {
+                await interaction.reply({
+                    embeds: [embed('❌ فشل التشغيل اليدوي', linesBlock([`حدث خطأ: ${err.message}`]), COLORS.danger)],
+                    ephemeral: true,
+                });
+            }
+            return true;
+        }
+
         if (commandRoute === 'agents') return updateInteraction(interaction, await renderAgents(manager, 0));
         if (commandRoute === 'create') return updateInteraction(interaction, createTypeView());
         if (commandRoute === 'settings') return updateInteraction(interaction, await renderSettings(interaction.guildId));
