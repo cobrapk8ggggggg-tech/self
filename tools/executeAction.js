@@ -188,6 +188,20 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${deleted}** رسالة من **#${targetCh.name}**`);
         }
 
+        if (a === 'delete_member_messages_all') {
+            const member = await findMember(guild, String(params.member), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
+            const perChannelLimit = Math.min(Number(params.limit_per_channel || params.limit || 100), 500);
+            let totalDeleted = 0;
+            const details = [];
+            for (const [, targetCh] of guild.channels.cache.filter(ch => isTextChannel(ch))) {
+                const deleted = await _safePurge(targetCh, perChannelLimit, (msg) => msg.author?.id === member.id);
+                if (deleted > 0) details.push(`#${targetCh.name}: ${deleted}`);
+                totalDeleted += deleted;
+            }
+            return _ok(`✅ تم حذف **${totalDeleted}** رسالة للعضو **${member.displayName}** عبر قنوات السيرفر.`, { deleted: totalDeleted, channels: details.slice(0, 30) });
+        }
+
         // ── delete_member_messages (مُصلح) ──
         if (a === 'delete_member_messages') {
             const memberQ = String(params.member || '');
@@ -440,7 +454,12 @@ async function executeAction(guild, channel, action, params, client) {
             }
             const content = String(params.content || '').trim();
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
-            const sent = await targetCh.send(content.slice(0, 2000));
+            const sendOptions = { content: content.slice(0, 2000) };
+            if (params.reply_message_id) {
+                sendOptions.reply = { messageReference: String(params.reply_message_id), failIfNotExists: false };
+                sendOptions.allowedMentions = { repliedUser: Boolean(params.mention_author) };
+            }
+            const sent = await targetCh.send(sendOptions);
             return _ok(`✅ تم إرسال الرسالة في **#${targetCh.name}** (${guild.name})`, { message_id: sent.id });
         }
 
