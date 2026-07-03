@@ -72,7 +72,10 @@ function toolGetRoles(guild) {
  * @param {string|null} query
  * @returns {object}
  */
-function toolGetMembers(guild, query = null) {
+async function toolGetMembers(guild, query = null, options = {}) {
+    if (guild.members?.fetch) {
+        await guild.members.fetch().catch(() => null);
+    }
     let members = [...guild.members.cache.values()];
     if (query) {
         const ql = query.toLowerCase();
@@ -82,8 +85,23 @@ function toolGetMembers(guild, query = null) {
             (m.user.globalName && m.user.globalName.toLowerCase().includes(ql)),
         );
     }
+    const includeBots = options.include_bots !== false;
+    const onlyBots = options.type === 'bots';
+    const onlyHumans = options.type === 'humans' || options.include_bots === false;
+    if (onlyBots) members = members.filter(m => m.user.bot);
+    else if (onlyHumans) members = members.filter(m => !m.user.bot);
+    const page = Math.max(1, Number(options.page || 1));
+    const pageSize = Math.max(1, Math.min(Number(options.page_size || 100), 500));
+    const start = (page - 1) * pageSize;
+    const pageRows = members.slice(start, start + pageSize);
     return {
-        members: members.slice(0, 60).map(m => ({
+        page,
+        page_size: pageSize,
+        total: members.length,
+        humans: members.filter(m => !m.user.bot).length,
+        bots: members.filter(m => m.user.bot).length,
+        has_more: start + pageSize < members.length,
+        members: pageRows.map(m => ({
             id         : m.id,
             username   : m.user.username,
             global_name: m.user.globalName || null,
@@ -384,7 +402,8 @@ function toolInactiveMembers(guild, days = 30, limit = 50) {
 }
 
 /** يجيب أعضاء رتبة محددة */
-function toolRoleMembers(guild, role, limit = 100) {
+async function toolRoleMembers(guild, role, limit = 100) {
+    await guild.members.fetch().catch(() => null);
     const roleObj = findRole(guild, String(role));
     if (!roleObj) return _err(`ما لقيت رتبة: ${role}`);
     const members = [...roleObj.members.values()].slice(0, Math.min(Number(limit), 500));
@@ -626,6 +645,60 @@ async function toolAnalyzeBot(guild, botQuery, channel = null) {
     };
 }
 
+
+
+/** يحلل بنية السيرفر كاملة للاستنساخ أو التدقيق */
+function toolServerBlueprint(guild) {
+    return {
+        server: toolServerInfo(guild),
+        roles: toolGetRoles(guild).roles,
+        categories: toolGetCategories(guild).categories,
+        channels: toolGetChannels(guild).channels,
+        permissions: toolChannelPermissions(guild).channel_permissions,
+        emojis: toolGetEmojis(guild),
+        stickers: toolGetStickers(guild),
+    };
+}
+
+/** يلخص مخاطر الصلاحيات العالية */
+function toolPermissionAudit(guild) {
+    const risky = [];
+    for (const role of guild.roles.cache.values()) {
+        const perms = role.permissions.toArray();
+        const hits = perms.filter(p => ['Administrator','ManageGuild','ManageRoles','ManageChannels','BanMembers','KickMembers','MentionEveryone','ManageWebhooks'].includes(p));
+        if (hits.length) risky.push({ id: role.id, name: role.name, position: role.position, permissions: hits, members: role.members.size });
+    }
+    return { risky_roles: risky.sort((a, b) => b.position - a.position), count: risky.length };
+}
+
+/** يعرض إحصاءات نشاط القنوات من الرسائل الحديثة */
+async function toolChannelActivity(guild, limitPerChannel = 50) {
+    const rows = [];
+    for (const ch of guild.channels.cache.values()) {
+        if (!isTextChannel(ch)) continue;
+        const fetched = await ch.messages.fetch({ limit: Math.min(Number(limitPerChannel), 100) }).catch(() => null);
+        if (!fetched) continue;
+        const users = new Set([...fetched.values()].filter(m => !m.author.bot).map(m => m.author.id));
+        rows.push({ id: ch.id, name: ch.name, recent_messages: fetched.size, human_speakers: users.size, last_message_id: ch.lastMessageId || null });
+    }
+    return { channels: rows.sort((a, b) => b.recent_messages - a.recent_messages), count: rows.length };
+}
+
+/** يفحص صحة إعدادات الوكيل في السيرفر */
+async function toolAgentConfigAudit(guild, agentId) {
+    const { get_allowed_channels, get_control_role } = require('../utils');
+    const { getAccountSettings } = require('../accountAgent');
+    const allowed = await get_allowed_channels(guild.id, agentId).catch(() => []);
+    const account = await getAccountSettings(agentId, guild.id).catch(() => ({}));
+    return {
+        allowed_channels: allowed.map(id => ({ id, exists: Boolean(guild.channels.cache.get(id)), mention: `<#${id}>` })),
+        control_role: await get_control_role(guild.id, agentId).catch(() => null),
+        account_channels: ['dm_channel_id','mention_channel_id','event_channel_id','deliveries_channel_id'].map(k => ({ key: k, id: account[k] || null, exists: account[k] ? Boolean(guild.channels.cache.get(account[k])) : false })),
+        event_role: { id: account.event_role_id || null, exists: account.event_role_id ? Boolean(guild.roles.cache.get(account.event_role_id)) : false },
+        mode: account.mode || 'manual',
+    };
+}
+
 // ══════════════════════════════════════════════════════════════
 //  Exports
 // ══════════════════════════════════════════════════════════════
@@ -658,4 +731,8 @@ module.exports = {
     toolGetMemberInfo,
     toolGetBotCommands,
     toolAnalyzeBot,
+    toolServerBlueprint,
+    toolPermissionAudit,
+    toolChannelActivity,
+    toolAgentConfigAudit,
 };
