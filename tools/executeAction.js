@@ -85,6 +85,29 @@ async function _safePurge(channel, limit, checkFn = null) {
     return totalDeleted;
 }
 
+
+function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
+    const overwrites = [];
+    for (const [, ow] of channel.permissionOverwrites.cache) {
+        let id = ow.id;
+        if (ow.type === 0 || channel.guild.roles.cache.has(ow.id)) {
+            if (ow.id === channel.guild.id) id = targetGuild.id;
+            else id = roleMap.get(ow.id)?.id || ow.id;
+        }
+        overwrites.push({ id, allow: ow.allow.bitfield, deny: ow.deny.bitfield, type: ow.type });
+    }
+    return overwrites;
+}
+
+function channelTypeForClone(ch, client) {
+    if (isCategoryChannel(ch)) return channelCreateType('category', client.__agentTokenType);
+    if (isVoiceChannel(ch)) return channelCreateType('voice', client.__agentTokenType);
+    if (ch.type === ChannelType.GuildAnnouncement) return ChannelType.GuildAnnouncement;
+    if (ch.type === ChannelType.GuildForum) return ChannelType.GuildForum;
+    if (ch.type === ChannelType.GuildStageVoice) return ChannelType.GuildStageVoice;
+    return channelCreateType('text', client.__agentTokenType);
+}
+
 // ══════════════════════════════════════════════════════════════
 //  EXECUTE ACTION — الأداة الرئيسية للتنفيذ
 // ══════════════════════════════════════════════════════════════
@@ -465,8 +488,26 @@ async function executeAction(guild, channel, action, params, client) {
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
             let sent;
             if (params.reply_to) {
-                const ref = await targetCh.messages.fetch(String(params.reply_to)).catch(() => null);
-                if (!ref) return _err('❌ لم أجد رسالة reply_to في القناة المحددة.');
+                const replyId = String(params.reply_to);
+                let ref = await targetCh.messages.fetch(replyId).catch(() => null);
+                if (!ref && params.reply_channel) {
+                    const replyCh = findChannel(guild, String(params.reply_channel)) || await client.channels.fetch(String(params.reply_channel)).catch(() => null);
+                    if (replyCh && isTextChannel(replyCh)) {
+                        targetCh = replyCh;
+                        ref = await replyCh.messages.fetch(replyId).catch(() => null);
+                    }
+                }
+                if (!ref) {
+                    for (const g of client.guilds.cache.values()) {
+                        for (const ch of g.channels.cache.values()) {
+                            if (!isTextChannel(ch)) continue;
+                            ref = await ch.messages.fetch(replyId).catch(() => null);
+                            if (ref) { targetCh = ch; break; }
+                        }
+                        if (ref) break;
+                    }
+                }
+                if (!ref) return _err('❌ لم أجد رسالة reply_to. تأكد من ID الرسالة وأن الحساب يرى القناة.');
                 sent = await ref.reply(content.slice(0, 2000));
             } else {
                 sent = await targetCh.send(content.slice(0, 2000));
@@ -736,6 +777,20 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
 
+
+        if (a === 'start_events') {
+            const targetCh = params.channel ? (findChannel(guild, String(params.channel)) || channel) : channel;
+            if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة فعاليات نصية صحيحة.');
+            const { runEventSeries } = require('../accountAgent');
+            const result = await runEventSeries(client, guild, targetCh, { agentId: client.__agentId || 'default' }, {
+                gameName: params.game || params.game_name || null,
+                count: Number(params.count || 1),
+                minutes: Number(params.minutes || 0),
+                first: true,
+            });
+            return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
+        }
+
         // ────────────────────────────────
         //  clone_server
         // ────────────────────────────────
@@ -764,7 +819,7 @@ async function executeAction(guild, channel, action, params, client) {
             // نسخ الرتب
             const sortedRoles = [...sourceGuild.roles.cache.values()]
                 .filter(r => r.name !== '@everyone')
-                .sort((a, b) => a.position - b.position);
+                .sort((a, b) => b.position - a.position);
             for (const r of sortedRoles) {
                 try {
                     const newRole = await target.roles.create({
@@ -773,7 +828,9 @@ async function executeAction(guild, channel, action, params, client) {
                         permissions: r.permissions,
                         hoist      : r.hoist,
                         mentionable: r.mentionable,
+                        reason     : `Clone role from ${sourceGuild.name}`,
                     });
+                    await newRole.setPosition(Math.min(r.position, target.roles.cache.size - 1)).catch(() => {});
                     roleMap.set(r.id, newRole);
                     createdRoles++;
                 } catch (e) {
@@ -787,7 +844,7 @@ async function executeAction(guild, channel, action, params, client) {
                 .sort((a, b) => a.position - b.position);
             for (const cat of sortedCats) {
                 try {
-                    const newCat = await target.channels.create({ name: cat.name, type: channelCreateType('category', client.__agentTokenType) });
+                    const newCat = await target.channels.create({ name: cat.name, type: channelTypeForClone(cat, client), permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap), position: cat.position });
                     catMap.set(cat.id, newCat);
                     createdCategories++;
                 } catch (e) {
@@ -805,19 +862,23 @@ async function executeAction(guild, channel, action, params, client) {
                     if (isTextChannel(ch)) {
                         await target.channels.create({
                             name           : ch.name,
-                            type           : channelCreateType('text', client.__agentTokenType),
+                            type           : channelTypeForClone(ch, client),
                             parent         : targetCat,
                             topic          : ch.topic || null,
                             nsfw           : ch.nsfw,
                             rateLimitPerUser: ch.rateLimitPerUser,
+                            permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
+                            position       : ch.position,
                         });
                     } else if (isVoiceChannel(ch)) {
                         await target.channels.create({
                             name     : ch.name,
-                            type     : channelCreateType('voice', client.__agentTokenType),
+                            type     : channelTypeForClone(ch, client),
                             parent   : targetCat,
-                            bitrate  : Math.min(ch.bitrate, target.maximumBitrate || 96000),
+                            bitrate  : Math.min(ch.bitrate || 64000, target.maximumBitrate || 96000),
                             userLimit: ch.userLimit,
+                            permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
+                            position : ch.position,
                         });
                     }
                     createdChannels++;
@@ -828,7 +889,7 @@ async function executeAction(guild, channel, action, params, client) {
 
             let summary = (
                 `✅ تم استنساخ **${sourceGuild.name}** → **${target.name}**\n` +
-                `الرتب: ${createdRoles} | الكاتيكوريات: ${createdCategories} | الرومات: ${createdChannels}`
+                `الرتب: ${createdRoles} | الكاتيكوريات: ${createdCategories} | الرومات: ${createdChannels} | الصلاحيات والترتيب: مفعلة`
             );
             if (errors.length) {
                 summary += `\n⚠️ بعض العناصر فشلت (${errors.length}): ` + errors.slice(0, 5).join('، ');
