@@ -60,18 +60,13 @@ function dashboardCommands() {
         new SlashCommandBuilder().setName('النظام').setDescription('فتح حالة النظام والتشغيل'),
         new SlashCommandBuilder()
             .setName('تشغيل-يدوي')
-            .setDescription('تشغيل عدد من الفعاليات يدوياً الآن للوكيل')
+            .setDescription('تشغيل عدد من الفعاليات يدوياً الآن')
             .addIntegerOption(opt =>
                 opt.setName('count')
                     .setDescription('عدد الفعاليات')
                     .setRequired(true)
                     .setMinValue(1)
-                    .setMaxValue(25))
-            .addStringOption(opt =>
-                opt.setName('agent')
-                    .setDescription('اختر الوكيل من القائمة')
-                    .setRequired(true)
-                    .setAutocomplete(true)),
+                    .setMaxValue(25)),
     ];
 }
 
@@ -458,23 +453,6 @@ async function updateInteraction(interaction, payload) {
     return interaction.reply(payload);
 }
 
-async function dashboardAutocomplete(interaction) {
-    const focused = interaction.options.getFocused(true);
-    if (focused.name !== 'agent') return;
-    const cfg = require('./config');
-    try {
-        const agents = await cfg.agents_col.find({}).sort({ name: 1 }).limit(25).toArray();
-        const choices = agents.map(a => ({
-            name: trim(`${statusIcon(a.status)} ${a.name || String(a._id)}`, 100),
-            value: String(a._id),
-        }));
-        await interaction.respond(choices);
-    } catch (e) {
-        console.error('Autocomplete error:', e);
-        await interaction.respond([]);
-    }
-}
-
 async function handleDashboardInteraction(interaction, manager) {
     const commandRoute = interaction.isChatInputCommand?.() ? dashboardCommandRoute(interaction.commandName) : null;
     const commandOk = Boolean(commandRoute);
@@ -485,35 +463,23 @@ async function handleDashboardInteraction(interaction, manager) {
     if (commandOk) {
         if (commandRoute === 'manual_run') {
             const cfg = require('./config');
-            const { runManual } = require('./accountAgent');
             const count = interaction.options.getInteger('count', true);
-            const agentId = interaction.options.getString('agent', true); // مضمون وجوده لأنه مطلوب
-
-            // التحقق من وجود الوكيل
-            const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
-            if (!agent) {
-                await interaction.reply({
-                    embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)],
-                    ephemeral: true,
-                });
+            const agents = await cfg.agents_col.find({}).sort({ name: 1 }).limit(25).toArray();
+            if (!agents.length) {
+                await interaction.reply({ embeds: [embed('❌ لا يوجد وكلاء', linesBlock(['لا يوجد وكلاء في قاعدة البيانات.']), COLORS.danger)], ephemeral: true });
                 return true;
             }
-
-            try {
-                const result = await runManual(agentId, interaction.guildId, count);
-                await interaction.reply({
-                    embeds: [embed('✅ تم التشغيل اليدوي', linesBlock([
-                        `الوكيل: **${agent.name || agentId}**`,
-                        `عدد الفعاليات: **${count}**`,
-                        `الحالة: ${result?.message || 'تم إرسال الأوامر'}`,
-                    ]), COLORS.success)],
-                });
-            } catch (err) {
-                await interaction.reply({
-                    embeds: [embed('❌ فشل التشغيل اليدوي', linesBlock([`حدث خطأ: ${err.message}`]), COLORS.danger)],
-                    ephemeral: true,
-                });
-            }
+            const emb = embed('🔧 تشغيل يدوي', linesBlock([
+                '**اختر الوكيل الذي تريد تشغيل الفعاليات له.**',
+                `عدد الفعاليات المطلوبة: **${count}**`,
+            ]), COLORS.info);
+            const row = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`${DASH_PREFIX}:manual_run_select:${count}`)
+                    .setPlaceholder('اختر الوكيل')
+                    .addOptions(agents.map(agentOption)),
+            );
+            await interaction.reply({ embeds: [emb], components: [row] });
             return true;
         }
 
@@ -529,6 +495,29 @@ async function handleDashboardInteraction(interaction, manager) {
 
     const id = interaction.customId;
     const parts = id.split(':');
+
+    if (id.startsWith(`${DASH_PREFIX}:manual_run_select:`)) {
+        const count = parseInt(parts[2], 10);
+        const agentId = interaction.values[0];
+        const cfg = require('./config');
+        const { runManual } = require('./accountAgent');
+        const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+        if (!agent) {
+            await interaction.update({ embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)], components: [] });
+            return true;
+        }
+        try {
+            const result = await runManual(agentId, interaction.guildId, count);
+            await interaction.update({ embeds: [embed('✅ تم التشغيل اليدوي', linesBlock([
+                `الوكيل: **${agent.name || agentId}**`,
+                `عدد الفعاليات: **${count}**`,
+                `الحالة: ${result?.message || 'تم إرسال الأوامر'}`,
+            ]), COLORS.success)], components: [] });
+        } catch (err) {
+            await interaction.update({ embeds: [embed('❌ فشل التشغيل اليدوي', linesBlock([`حدث خطأ: ${err.message}`]), COLORS.danger)], components: [] });
+        }
+        return true;
+    }
 
     if (interaction.isStringSelectMenu() && id === `${DASH_PREFIX}:create_type`) {
         await interaction.showModal(createAgentModal(interaction.values[0]));
@@ -917,7 +906,6 @@ module.exports = {
     dashboardCommandRoute,
     isDashboardCommand,
     handleDashboardInteraction,
-    dashboardAutocomplete,
     renderHome,
     COLORS,
     embed,
