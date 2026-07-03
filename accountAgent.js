@@ -12,8 +12,13 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     deliveries_channel_id: '1302635629108269177',
     event_role_id: '1339697461878456381',
     mode: 'manual',
+    manual_default_count: 1,
+    manual_default_minutes: 0,
     auto_min_messages_10m: 3,
     auto_inactivity_minutes: 20,
+    auto_run_count: 3,
+    auto_run_minutes: 0,
+    schedule_slots: [],
     event_wait_ms: 10000,
     first_event_announces_everyone: true,
     games: [
@@ -34,6 +39,7 @@ const bridge = new Map();
 const memory = new Map();
 const activity = new Map();
 const autoLocks = new Map();
+const scheduledLoops = new Map();
 
 
 function humanizeDisplayName(name) {
@@ -193,6 +199,58 @@ async function startEvent(client, guild, channel, runtime, gameName = null, firs
     return game;
 }
 
+async function runEventSeries(client, guild, channel, runtime, options = {}) {
+    const settings = await getAccountSettings(runtime.agentId, guild.id);
+    const minutesLimit = Math.max(0, Number(options.minutes || settings.manual_default_minutes || 0));
+    const fallbackCount = minutesLimit ? 50 : (settings.manual_default_count || 1);
+    const countLimit = Math.max(1, Math.min(Number(options.count || fallbackCount), 50));
+    const startedAt = Date.now();
+    const results = [];
+    const key = `${runtime.agentId}:${guild.id}:${channel.id}:series`;
+    if (autoLocks.get(key)) return { ok: false, msg: 'هناك سلسلة فعاليات تعمل بالفعل لهذه القناة.', results };
+    autoLocks.set(key, true);
+    try {
+        for (let i = 0; i < countLimit; i++) {
+            if (minutesLimit && Date.now() - startedAt >= minutesLimit * 60 * 1000) break;
+            const game = await startEvent(client, guild, channel, runtime, options.gameName || null, i === 0 && Boolean(options.first));
+            results.push(game);
+            if (i < countLimit - 1) await new Promise(r => setTimeout(r, Number(settings.event_wait_ms || 10000)));
+        }
+        return { ok: true, msg: `تم تشغيل ${results.length} فعالية.`, results };
+    } finally {
+        autoLocks.delete(key);
+    }
+}
+
+function parseScheduleSlot(slot) {
+    const m = String(slot || '').match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})(?:#(\d+))?$/);
+    if (!m) return null;
+    const start = Number(m[1]) * 60 + Number(m[2]);
+    const end = Number(m[3]) * 60 + Number(m[4]);
+    return { start, end, count: Number(m[5] || 0) };
+}
+
+async function maybeScheduledEvent(client, message, runtime) {
+    if (!message.guild || message.author?.bot) return false;
+    const settings = await getAccountSettings(runtime.agentId, message.guild.id);
+    if (settings.mode !== 'schedule') return false;
+    const slots = Array.isArray(settings.schedule_slots) ? settings.schedule_slots : [];
+    if (!slots.length) return false;
+    const now = new Date();
+    const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const active = slots.map(parseScheduleSlot).find(s => s && minute >= s.start && minute <= s.end);
+    if (!active) return false;
+    const channelId = settings.event_channel_id || message.channel.id;
+    const stamp = now.toISOString().slice(0, 10) + ':' + active.start + '-' + active.end;
+    const key = `${runtime.agentId}:${message.guild.id}:${channelId}:schedule:${stamp}`;
+    if (scheduledLoops.get(key)) return false;
+    scheduledLoops.set(key, true);
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !isTextChannel(channel)) return false;
+    const minutes = Math.max(1, active.end - active.start);
+    runEventSeries(client, message.guild, channel, runtime, { count: active.count || settings.auto_run_count || 50, minutes, first: true }).catch(() => {});
+    return true;
+}
 
 function rememberActivity(agentId, message) {
     if (!message.guild || message.author?.bot) return;
@@ -218,7 +276,7 @@ async function maybeAutoEvent(client, message, runtime) {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !isTextChannel(channel)) return false;
     autoLocks.set(key, true);
-    startEvent(client, message.guild, channel, runtime, null, !last).catch(() => {}).finally(() => autoLocks.delete(key));
+    runEventSeries(client, message.guild, channel, runtime, { count: settings.auto_run_count || 3, minutes: settings.auto_run_minutes || 0, first: !last }).catch(() => {}).finally(() => autoLocks.delete(key));
     return true;
 }
 
@@ -228,4 +286,4 @@ async function summarizeMemory(agentId, guildId, limit = 10) {
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
-module.exports = { humanizeDisplayName, getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, startHumanTyping, rememberActivity, maybeAutoEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
+module.exports = { humanizeDisplayName, getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, runEventSeries, startHumanTyping, rememberActivity, maybeAutoEvent, maybeScheduledEvent, summarizeMemory, DEFAULT_ACCOUNT_SETTINGS };
