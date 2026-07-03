@@ -50,6 +50,8 @@ const {
     toolGetNitroBoosters,
     toolGetBotList,
     toolGetMemberInfo,
+    toolGetBotCommands,
+    toolAnalyzeBot,
 } = require('./readTools');
 
 const { executeAction } = require('./executeAction');
@@ -237,7 +239,7 @@ async function runAgent(
                 'get_pinned_messages', 'get_voice_states', 'search_messages',
                 'moderation_overview', 'recent_joins', 'inactive_members', 'role_members', 'channel_permissions',
                 'get_webhooks', 'get_scheduled_events', 'get_threads', 'get_nitro_boosters',
-                'get_bot_list', 'get_member_info',
+                'get_bot_list', 'get_member_info', 'get_bot_commands', 'analyze_bot',
             ];
 
             if (readTools.includes(tool)) {
@@ -329,6 +331,10 @@ async function runAgent(
                             result = toolGetBotList(targetGuild); break;
                         case 'get_member_info':
                             result = await toolGetMemberInfo(targetGuild, String(params.member || '')); break;
+                        case 'get_bot_commands':
+                            result = await toolGetBotCommands(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh(), Number(params.limit || 300)); break;
+                        case 'analyze_bot':
+                            result = await toolAnalyzeBot(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh()); break;
                         default:
                             result = _err(`أداة غير مُنفَّذة: ${tool}`);
                     }
