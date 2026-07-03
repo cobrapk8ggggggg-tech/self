@@ -14,7 +14,7 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     mode: 'manual',
     auto_min_messages_10m: 3,
     auto_inactivity_minutes: 20,
-    event_wait_ms: 40000,
+    event_wait_ms: 10000,
     first_event_announces_everyone: true,
     games: [
         { name: 'مافيا', command: '+مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
