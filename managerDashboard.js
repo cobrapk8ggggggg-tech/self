@@ -500,18 +500,35 @@ async function handleDashboardInteraction(interaction, manager) {
         const count = parseInt(parts[2], 10);
         const agentId = interaction.values[0];
         const cfg = require('./config');
-        const { runManual } = require('./accountAgent');
+        const { runEventSeries, getAccountSettings } = require('./accountAgent');
         const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
         if (!agent) {
             await interaction.update({ embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)], components: [] });
             return true;
         }
+        const runtime = manager.runtimes.get(String(agentId));
+        if (!runtime || !runtime.client) {
+            await interaction.update({ embeds: [embed('❌ الوكيل غير نشط', linesBlock(['يجب أن يكون الوكيل في حالة تشغيل (Runtime نشط) لتنفيذ الفعاليات.']), COLORS.danger)], components: [] });
+            return true;
+        }
+        const guild = interaction.guild;
+        if (!guild) {
+            await interaction.update({ embeds: [embed('❌ خطأ', linesBlock(['هذا الأمر يعمل فقط داخل السيرفرات.']), COLORS.danger)], components: [] });
+            return true;
+        }
+        const settings = await getAccountSettings(agentId, guild.id);
+        const channelId = settings.event_channel_id || interaction.channelId;
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased()) {
+            await interaction.update({ embeds: [embed('❌ قناة غير صالحة', linesBlock(['قناة الفعاليات غير موجودة أو ليست قناة نصية.']), COLORS.danger)], components: [] });
+            return true;
+        }
         try {
-            const result = await runManual(agentId, interaction.guildId, count);
+            const result = await runEventSeries(runtime.client, guild, channel, runtime, { count, first: true });
             await interaction.update({ embeds: [embed('✅ تم التشغيل اليدوي', linesBlock([
                 `الوكيل: **${agent.name || agentId}**`,
                 `عدد الفعاليات: **${count}**`,
-                `الحالة: ${result?.message || 'تم إرسال الأوامر'}`,
+                `النتيجة: ${result.msg}`,
             ]), COLORS.success)], components: [] });
         } catch (err) {
             await interaction.update({ embeds: [embed('❌ فشل التشغيل اليدوي', linesBlock([`حدث خطأ: ${err.message}`]), COLORS.danger)], components: [] });
