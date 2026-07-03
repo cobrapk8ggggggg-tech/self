@@ -309,6 +309,28 @@ function safeModalValue(value, max) {
     return String(value || '').slice(0, max);
 }
 
+
+function conversationCreateModal(agentId) {
+    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:conversation_create_modal:${agentId}`).setTitle('إنشاء محادثة وكيل');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel_id').setLabel('ID القناة').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('الوضع: default أو expert').setStyle(TextInputStyle.Short).setRequired(false).setValue('default')),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('thinking').setLabel('التفكير: on أو off').setStyle(TextInputStyle.Short).setRequired(false).setValue('off')),
+    );
+    return modal;
+}
+
+function accountRunModal(agentId) {
+    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:account_run_modal:${agentId}`).setTitle('إعدادات تشغيل الفعاليات');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('manual_default_count').setLabel('عدد اليدوي الافتراضي').setStyle(TextInputStyle.Short).setRequired(false).setValue('1')),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('auto_run_count').setLabel('عدد التلقائي عند الخمول').setStyle(TextInputStyle.Short).setRequired(false).setValue('3')),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('auto_run_minutes').setLabel('مدة التلقائي بالدقائق (0 لتعطيلها)').setStyle(TextInputStyle.Short).setRequired(false).setValue('0')),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('schedule_slots').setLabel('جدول UTC مثل 20:00-22:00#5,23:00-23:30#2').setStyle(TextInputStyle.Paragraph).setRequired(false)),
+    );
+    return modal;
+}
+
 function editAgentModal(agent) {
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:edit_modal:${agent._id}`).setTitle('تعديل إعدادات الوكيل');
     modal.addComponents(
@@ -489,6 +511,41 @@ async function handleDashboardInteraction(interaction, manager) {
         return true;
     }
 
+    if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:conversation_create_modal:`)) {
+        const agentId = parts[2];
+        const { db_save_channel_session } = require('./utils');
+        const channelId = interaction.fields.getTextInputValue('channel_id').replace(/\D/g, '');
+        const modeRaw = interaction.fields.getTextInputValue('mode') || 'default';
+        const mode = modeRaw.toLowerCase().includes('expert') ? 'expert' : 'default';
+        const thinkingRaw = interaction.fields.getTextInputValue('thinking') || 'off';
+        const thinking = /^on|true|yes|1|مفعل/i.test(thinkingRaw);
+        if (!channelId) {
+            await interaction.reply({ content: '❌ اكتب ID قناة صحيح.', ephemeral: true });
+            return true;
+        }
+        await db_save_channel_session(interaction.guildId, channelId, null, null, mode, thinking, agentId);
+        const runtime = manager?.runtimes?.get?.(String(agentId));
+        runtime?.channel_sessions?.set?.(`${interaction.guildId}_${channelId}`, { session_id: null, parent_message_id: null, mode, thinking });
+        await manager.logAgent(agentId, 'conversation_create', 'تم إنشاء محادثة قناة من Dashboard', { channel_id: channelId, mode, thinking });
+        await interaction.reply(await renderAgentConversations(agentId, interaction.guildId));
+        return true;
+    }
+
+    if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:account_run_modal:`)) {
+        const agentId = parts[2];
+        const { updateAccountSettings } = require('./accountAgent');
+        const patch = {
+            manual_default_count: Number(interaction.fields.getTextInputValue('manual_default_count') || 1),
+            auto_run_count: Number(interaction.fields.getTextInputValue('auto_run_count') || 3),
+            auto_run_minutes: Number(interaction.fields.getTextInputValue('auto_run_minutes') || 0),
+            schedule_slots: String(interaction.fields.getTextInputValue('schedule_slots') || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 6),
+        };
+        await updateAccountSettings(agentId, interaction.guildId, patch);
+        await manager.logAgent(agentId, 'account_settings', 'تم تحديث تشغيل وسلاسل وجدولة الفعاليات', patch);
+        await interaction.reply(await renderAccountAdvanced(agentId, interaction.guildId));
+        return true;
+    }
+
     if (parts[1] === 'home') return updateInteraction(interaction, await renderHome(manager, interaction));
     if (parts[1] === 'agents') return updateInteraction(interaction, await renderAgents(manager, parts[2]));
     if (parts[1] === 'create') return updateInteraction(interaction, createTypeView());
@@ -568,6 +625,8 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
         if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
         if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
+        if (action === 'conversation_create') { await interaction.showModal(conversationCreateModal(agentId)); return true; }
+        if (action === 'account_run') { await interaction.showModal(accountRunModal(agentId)); return true; }
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -621,7 +680,9 @@ async function renderAccountSettings(agentId, guildId) {
         `🎮 قناة الفعاليات: ${settings.event_channel_id ? `<#${settings.event_channel_id}>` : 'القناة الحالية عند الأمر'}`,
         `📦 قناة التسليمات: ${settings.deliveries_channel_id ? `<#${settings.deliveries_channel_id}>` : 'غير محددة'}`,
         `🟢 رول منشن الفعاليات: ${settings.event_role_id ? `<@&${settings.event_role_id}>` : 'غير محدد'}`,
-        `⚙️ الوضع: **${settings.mode === 'auto' ? 'تلقائي' : 'يدوي'}**`,
+        `⚙️ الوضع: **${settings.mode === 'auto' ? 'تلقائي' : settings.mode === 'schedule' ? 'جدولة' : 'يدوي'}**`,
+        `🔁 اليدوي الافتراضي: **${settings.manual_default_count || 1}** فعالية`,
+        `🤖 التلقائي عند الخمول: **${settings.auto_run_count || 3}** فعالية / **${settings.auto_run_minutes || 0}** دقيقة`,
         `⏱️ انتظار اللوبي: **${Math.round(Number(settings.event_wait_ms || 40000) / 1000)}s**`,
         '',
         '**الألعاب الافتراضية حسب ID البوت والبريفكس:**',
@@ -660,7 +721,10 @@ async function renderAccountAdvanced(agentId, guildId) {
     const emb = embed('⚙️ إعدادات متقدمة للحساب والفعاليات', linesBlock([
         `الوكيل: **${agent?.name || 'غير معروف'}**`,
         `🟢 رول منشن الفعاليات: ${settings.event_role_id ? `<@&${settings.event_role_id}>` : 'غير محدد'}`,
-        `⚙️ الوضع الحالي: **${settings.mode === 'auto' ? 'تلقائي' : 'يدوي'}**`,
+        `⚙️ الوضع الحالي: **${settings.mode === 'auto' ? 'تلقائي' : settings.mode === 'schedule' ? 'جدولة يومية' : 'يدوي'}**`,
+        `🔁 اليدوي الافتراضي: **${settings.manual_default_count || 1}**`,
+        `🤖 التلقائي: **${settings.auto_run_count || 3}** فعاليات / **${settings.auto_run_minutes || 0}** دقيقة`,
+        `🗓️ الجدول UTC: **${(settings.schedule_slots || []).join(', ') || 'غير محدد'}**`,
         `📣 أول فعالية: **${settings.first_event_announces_everyone ? '@everyone' : 'رول الفعاليات'}**`,
         `⏱️ انتظار اللوبي: **${Math.round(Number(settings.event_wait_ms || 40000) / 1000)}s**`,
         '',
@@ -674,11 +738,12 @@ async function renderAccountAdvanced(agentId, guildId) {
             new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_mode`).setPlaceholder('اختر وضع الفعاليات').addOptions([
                 { label: 'يدوي', value: 'manual', description: 'لا يبدأ فعاليات إلا بأمر منك' },
                 { label: 'تلقائي', value: 'auto', description: 'يراقب الخمول ويبدأ فعاليات لتنشيط السيرفر' },
+                { label: 'جدولة يومية', value: 'schedule', description: 'يشغل الفعاليات يومياً ضمن أوقات محددة' },
             ]),
         ),
         ...rowsFromButtons([
             button(`${DASH_PREFIX}:agent:${agentId}:account`, 'رجوع للحساب', ButtonStyle.Secondary, ICONS.back),
-            button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
+            button(`${DASH_PREFIX}:agent:${agentId}:account_run`, 'تشغيل/جدولة', ButtonStyle.Primary, '🗓️'), button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
         ]),
     ] };
 }
@@ -736,7 +801,7 @@ async function renderAgentConversations(agentId, guildId) {
                 })),
         ));
     }
-    components.push(...rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back), button(`${DASH_PREFIX}:agent:${agentId}:conversations`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh)]));
+    components.push(...rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:conversation_create`, 'إنشاء محادثة', ButtonStyle.Success, '➕'), button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back), button(`${DASH_PREFIX}:agent:${agentId}:conversations`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh)]));
     return { embeds: [emb], components };
 }
 
