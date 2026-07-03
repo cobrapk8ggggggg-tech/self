@@ -266,6 +266,7 @@ async function renderAgent(manager, agentId) {
         button(`${DASH_PREFIX}:agent:${id}:channels`, 'القنوات', ButtonStyle.Secondary, '📡'),
         button(`${DASH_PREFIX}:agent:${id}:conversations`, 'المحادثات', ButtonStyle.Secondary, '💬'),
         button(`${DASH_PREFIX}:agent:${id}:provider`, 'مزود POW', ButtonStyle.Secondary, '⚡'),
+        button(`${DASH_PREFIX}:agent:${id}:account`, 'الحساب والفعاليات', ButtonStyle.Secondary, '👤'),
         button(`${DASH_PREFIX}:agent:${id}:notify`, 'الإشعارات', ButtonStyle.Secondary, '🔔'),
         button(`${DASH_PREFIX}:agent:${id}:logs:0`, 'Timeline', ButtonStyle.Secondary, '📜'),
         button(`${DASH_PREFIX}:agent:${id}:delete_confirm`, 'حذف', ButtonStyle.Danger, '🗑️'),
@@ -501,6 +502,25 @@ async function handleDashboardInteraction(interaction, manager) {
         const agentId = parts[2];
         const action = parts[3];
         const cfg = require('./config');
+        if (interaction.isChannelSelectMenu() && ['acct_dm','acct_mention','acct_event','acct_deliveries'].includes(action)) {
+            const { updateAccountSettings } = require('./accountAgent');
+            const map = { acct_dm: 'dm_channel_id', acct_mention: 'mention_channel_id', acct_event: 'event_channel_id', acct_deliveries: 'deliveries_channel_id' };
+            await updateAccountSettings(agentId, interaction.guildId, { [map[action]]: interaction.values[0] });
+            await manager.logAgent(agentId, 'account_settings', 'تم تحديث إعدادات الحساب الحقيقي من Dashboard', { field: map[action], value: interaction.values[0] });
+            return interaction.update(await renderAccountSettings(agentId, interaction.guildId));
+        }
+        if (interaction.isRoleSelectMenu() && action === 'acct_role') {
+            const { updateAccountSettings } = require('./accountAgent');
+            await updateAccountSettings(agentId, interaction.guildId, { event_role_id: interaction.values[0] });
+            await manager.logAgent(agentId, 'account_settings', 'تم تحديث رول فعاليات الحساب الحقيقي', { role_id: interaction.values[0] });
+            return interaction.update(await renderAccountSettings(agentId, interaction.guildId));
+        }
+        if (interaction.isStringSelectMenu() && action === 'acct_mode') {
+            const { updateAccountSettings } = require('./accountAgent');
+            await updateAccountSettings(agentId, interaction.guildId, { mode: interaction.values[0] });
+            await manager.logAgent(agentId, 'account_settings', 'تم تحديث وضع فعاليات الحساب الحقيقي', { mode: interaction.values[0] });
+            return interaction.update(await renderAccountSettings(agentId, interaction.guildId));
+        }
         if (interaction.isChannelSelectMenu() && action === 'notify_channel') {
             await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set: { notification_channel_id: interaction.values[0], updated_at: new Date() } });
             await manager.logAgent(agentId, 'notification_channel', 'تم تحديث قناة إشعارات الوكيل');
@@ -542,6 +562,7 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'channels') return updateInteraction(interaction, await renderAgentChannels(agentId, interaction.guildId));
         if (action === 'conversations') return updateInteraction(interaction, await renderAgentConversations(agentId, interaction.guildId));
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
+        if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -577,6 +598,61 @@ async function handleDashboardInteraction(interaction, manager) {
     return false;
 }
 
+
+
+async function renderAccountSettings(agentId, guildId) {
+    const cfg = require('./config');
+    const { getAccountSettings, summarizeMemory } = require('./accountAgent');
+    const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const settings = guildId ? await getAccountSettings(agentId, guildId).catch(() => ({})) : {};
+    const mem = guildId ? await summarizeMemory(agentId, guildId, 6).catch(() => []) : [];
+    const games = (settings.games || []).map(g => `${g.command} ← ${g.name} (${g.bot_id})`).slice(0, 9);
+    const memLines = mem.length ? mem.map(x => `• ${fmtDate(x.at)} — ${x.kind}: ${x.game || x.bot_id || x.message_id || '—'}`) : ['لا توجد ذاكرة فعاليات بعد.'];
+    const emb = embed('👤 إعدادات الحساب الحقيقي والفعاليات', linesBlock([
+        `الوكيل: **${agent?.name || 'غير معروف'}**`,
+        `النوع: **${tokenTypeLabel(agent)}**`,
+        `📩 قناة الخاص: ${settings.dm_channel_id ? `<#${settings.dm_channel_id}>` : 'غير محددة'}`,
+        `🔔 قناة المنشن/الردود: ${settings.mention_channel_id ? `<#${settings.mention_channel_id}>` : 'غير محددة'}`,
+        `🎮 قناة الفعاليات: ${settings.event_channel_id ? `<#${settings.event_channel_id}>` : 'القناة الحالية عند الأمر'}`,
+        `📦 قناة التسليمات: ${settings.deliveries_channel_id ? `<#${settings.deliveries_channel_id}>` : 'غير محددة'}`,
+        `🟢 رول منشن الفعاليات: ${settings.event_role_id ? `<@&${settings.event_role_id}>` : 'غير محدد'}`,
+        `⚙️ الوضع: **${settings.mode === 'auto' ? 'تلقائي' : 'يدوي'}**`,
+        `⏱️ انتظار اللوبي: **${Math.round(Number(settings.event_wait_ms || 40000) / 1000)}s**`,
+        '',
+        '**الألعاب الافتراضية حسب ID البوت والبريفكس:**',
+        ...games,
+        '',
+        '**آخر ذاكرة:**',
+        ...memLines,
+    ]), COLORS.live);
+    return { embeds: [emb], components: [
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_dm`).setPlaceholder('حدد قناة تحويل الخاص').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_mention`).setPlaceholder('حدد قناة المنشن/الردود').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_event`).setPlaceholder('حدد قناة الفعاليات').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_deliveries`).setPlaceholder('حدد قناة التسليمات').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+        ),
+        new ActionRowBuilder().addComponents(
+            new RoleSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_role`).setPlaceholder('حدد رول منشن الفعاليات'),
+        ),
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_mode`).setPlaceholder('اختر وضع الفعاليات').addOptions([
+                { label: 'يدوي', value: 'manual', description: 'لا يبدأ فعاليات إلا بأمر منك' },
+                { label: 'تلقائي', value: 'auto', description: 'يراقب الخمول ويبدأ فعاليات لتنشيط السيرفر' },
+            ]),
+        ),
+        ...rowsFromButtons([
+            button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back),
+            button(`${DASH_PREFIX}:agent:${agentId}:account`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
+        ]),
+    ] };
+}
 
 async function renderAgentProvider(agentId, guildId) {
     const cfg = require('./config');
