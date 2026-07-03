@@ -80,7 +80,7 @@ const {
 } = require('./discordAdapter');
 
 const { dashboardCommands, isDashboardCommand } = require('./managerDashboard');
-const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, rememberActivity, maybeAutoEvent } = require('./accountAgent');
+const { getAccountSettings, updateAccountSettings, forwardMessage, handleAccountInteraction, handleControlReply, trackGameMessage, startEvent, rememberActivity, maybeAutoEvent, humanizeDisplayName } = require('./accountAgent');
 
 function agentRuntimeCommands() {
     const channelOption = (option) => option
@@ -720,7 +720,7 @@ client.on('messageCreate', async (message) => {
         cs = channel_sessions.get(chKey);
     });
 
-    const botName = client.user.displayName || client.user.username;
+    const botName = tokenType === 'user' ? humanizeDisplayName(client.user.displayName || client.user.username) : (client.user.displayName || client.user.username);
     const mode = cs.mode || 'default';
     const thinking = cs.thinking || false;
 
