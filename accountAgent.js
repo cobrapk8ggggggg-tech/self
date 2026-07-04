@@ -18,10 +18,12 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     auto_inactivity_minutes: 20,
     auto_run_count: 3,
     auto_run_minutes: 0,
-    schedule_config: {           // ⬅️ تم الاستبدال
+    schedule_config: {
         frequency: null,         // 'once', 'daily', 'days'
         days_count: 1,
-        slots: []                // [{ type:'range'|'count', start:{h,m}, end?:{h,m}, count?:number }]
+        start_date: null,
+        executed_once: false,
+        slots: []               // [{ type:'range'|'count', start:{h,m}, end?:{h,m}, count?:number }]
     },
     event_wait_ms: 10000,
     first_event_announces_everyone: true,
@@ -44,21 +46,28 @@ const activity = new Map();
 const autoLocks = new Map();
 const scheduledLoops = new Map();
 
-// ---------------------- توابع مساعدة للجدولة الجديدة ----------------------
+// ---------------------- دوال مساعدة للجدولة الذكية ----------------------
 function nowInMinutes() {
     const d = new Date();
     return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
-function slotActive(slot, nowMins) {
+function slotStartMinutes(slot) {
+    return (slot.start.hour || 0) * 60 + (slot.start.minute || 0);
+}
+
+function slotEndMinutes(slot) {
     if (slot.type === 'range') {
-        const start = (slot.start.hour || 0) * 60 + (slot.start.minute || 0);
-        const end = (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
-        return nowMins >= start && nowMins <= end;
+        return (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
+    }
+    return slotStartMinutes(slot); // للـ count يعتبر نفسه
+}
+
+function isSlotActive(slot, nowMins) {
+    if (slot.type === 'range') {
+        return nowMins >= slotStartMinutes(slot) && nowMins <= slotEndMinutes(slot);
     } else if (slot.type === 'count') {
-        const start = (slot.start.hour || 0) * 60 + (slot.start.minute || 0);
-        // يعتبر نشطاً إذا مرت دقيقة البداية ولم ننته بعد من العدد المطلوب (تتم متابعته داخل الجلسة)
-        return nowMins >= start;
+        return nowMins >= slotStartMinutes(slot);
     }
     return false;
 }
@@ -69,11 +78,10 @@ async function runScheduleSession(client, guild, channel, runtime, slot) {
     let started = false;
 
     if (slot.type === 'range') {
-        const endMins = (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
+        const endMins = slotEndMinutes(slot);
         while (nowInMinutes() <= endMins) {
             const game = await startEvent(client, guild, channel, runtime, null, !started);
             started = true;
-            // انتظار رسالة الفوز
             try {
                 await channel.awaitMessages({
                     filter: m => {
@@ -131,33 +139,116 @@ async function maybeScheduledRun(client, guild, channel, runtime) {
     if (settings.mode !== 'schedule' || !settings.schedule_config?.slots?.length) return;
     const config = settings.schedule_config;
     const today = new Date();
-    const dayOfYear = Math.floor((today - new Date(today.getFullYear(), 0, 0)) / 86400000);
 
-    // التحقق من التردد
     if (config.frequency === 'once') {
-        // يفترض أن يحدد تاريخ انتهاء؛ للتبسيط نتحقق مما إذا كان اليوم هو تاريخ البدء (الذي يُخزّن). يمكن إضافة start_date لاحقاً.
-        // حالياً: نسمح بالعمل مرة واحدة فقط عند تفعيله لأول مرة.
-        if (scheduledLoops.get(`${runtime.agentId}:${guild.id}:schedule_done`)) return;
+        if (config.executed_once) return;
     } else if (config.frequency === 'days') {
-        // افتراضياً يحسب من تاريخ التفعيل. سنخزّن تاريخ التفعيل.
-        // حالياً: نترك المجال مفتوحاً ويمكن إضافة start_date لاحقاً.
+        if (!config.start_date) {
+            const { updateAccountSettings } = require('./accountAgent');
+            await updateAccountSettings(runtime.agentId, guild.id, { schedule_config: { ...config, start_date: today.toISOString() } });
+            config.start_date = today.toISOString();
+        }
+        const start = new Date(config.start_date);
+        const diffDays = Math.floor((today - start) / 86400000);
+        if (diffDays >= (config.days_count || 1)) return;
     }
 
     const nowMins = nowInMinutes();
     for (const slot of config.slots) {
-        if (slotActive(slot, nowMins)) {
+        if (isSlotActive(slot, nowMins)) {
             const key = `${runtime.agentId}:${guild.id}:${channel.id}:schedule`;
             if (autoLocks.get(key)) continue;
             autoLocks.set(key, true);
+            
+            if (config.frequency === 'once') {
+                const { updateAccountSettings } = require('./accountAgent');
+                await updateAccountSettings(runtime.agentId, guild.id, { schedule_config: { ...config, executed_once: true } });
+            }
+
             runScheduleSession(client, guild, channel, runtime, slot)
                 .catch(() => {})
                 .finally(() => autoLocks.delete(key));
-            break; // شغّل أول فتحة متاحة فقط
+            break;
         }
     }
 }
 
-// ---------------------- بقية الدوال الأصلية (مع تعديل trackGameMessage لقراءة embeds) ----------------------
+// ---------- الدورة الذكية الجديدة (تعمل بمؤقت واحد فقط) ----------
+let mainScheduleTimer = null;
+
+async function scheduleNextRun(manager) {
+    if (mainScheduleTimer) clearTimeout(mainScheduleTimer);
+    if (!manager || !manager.runtimes) return;
+
+    let nearestTimeout = Infinity;
+    const now = new Date();
+    const nowMins = nowInMinutes();
+
+    // نجمع كل الفتحات القادمة من كل الوكلاء النشطين
+    for (const [agentId, runtime] of manager.runtimes.entries()) {
+        if (!runtime.client || !runtime.client.guilds) continue;
+        for (const guild of runtime.client.guilds.cache.values()) {
+            try {
+                const settings = await getAccountSettings(agentId, guild.id);
+                if (!settings || settings.mode !== 'schedule' || !settings.schedule_config?.slots?.length) continue;
+                
+                const config = settings.schedule_config;
+                // تحقق من صلاحية الجدول زمنياً
+                if (config.frequency === 'once' && config.executed_once) continue;
+                if (config.frequency === 'days' && config.start_date) {
+                    const start = new Date(config.start_date);
+                    const diffDays = Math.floor((now - start) / 86400000);
+                    if (diffDays >= (config.days_count || 1)) continue;
+                }
+
+                for (const slot of config.slots) {
+                    const startMins = slotStartMinutes(slot);
+                    if (startMins <= nowMins) continue; // بدأ بالفعل أو فات
+                    
+                    // كم دقيقة متبقية؟
+                    const diffMins = startMins - nowMins;
+                    const timeoutMs = diffMins * 60 * 1000;
+                    if (timeoutMs < nearestTimeout) {
+                        nearestTimeout = timeoutMs;
+                    }
+                }
+            } catch (_) {}
+        }
+    }
+
+    if (nearestTimeout !== Infinity && nearestTimeout > 0) {
+        console.log(`⏳ أقرب جلسة جدولة بعد ${Math.round(nearestTimeout / 60000)} دقيقة`);
+        mainScheduleTimer = setTimeout(async () => {
+            // نفذ الجلسات المستحقة الآن
+            for (const [agentId, runtime] of manager.runtimes.entries()) {
+                if (!runtime.client || !runtime.client.guilds) continue;
+                for (const guild of runtime.client.guilds.cache.values()) {
+                    try {
+                        const settings = await getAccountSettings(agentId, guild.id);
+                        if (!settings || settings.mode !== 'schedule') continue;
+                        const channelId = settings.event_channel_id;
+                        if (!channelId) continue;
+                        const channel = await runtime.client.channels.fetch(channelId).catch(() => null);
+                        if (!channel || !isTextChannel(channel)) continue;
+                        maybeScheduledRun(runtime.client, guild, channel, runtime).catch(() => {});
+                    } catch (_) {}
+                }
+            }
+            // أعد الجدولة من جديد
+            scheduleNextRun(manager);
+        }, nearestTimeout);
+    }
+}
+
+function startScheduleTimers(manager) {
+    if (!manager || !manager.runtimes) return;
+    console.log('⏳ بدء نظام الجدولة الذكي (مؤقت دقيق)...');
+    scheduleNextRun(manager);
+    // نعيد الحساب كل 10 دقائق في حال تغيرت الإعدادات أو أُضيفت جداول جديدة
+    setInterval(() => scheduleNextRun(manager), 600000);
+}
+
+// ---------------------- باقي الدوال بدون تغيير ----------------------
 
 function humanizeDisplayName(name) {
     const raw = String(name || '').trim();
@@ -173,9 +264,8 @@ function humanizeDisplayName(name) {
 
 function mergeSettings(doc) {
     const merged = { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
-    // ضمان أن schedule_config كائن صحيح
     if (!merged.schedule_config || typeof merged.schedule_config !== 'object') {
-        merged.schedule_config = { frequency: null, days_count: 1, slots: [] };
+        merged.schedule_config = { frequency: null, days_count: 1, start_date: null, executed_once: false, slots: [] };
     }
     return merged;
 }
@@ -369,9 +459,7 @@ function parseScheduleSlot(slot) {
     return { start, end, count: Number(m[5] || 0) };
 }
 
-// الدالة القديمة للإبقاء على التوافق (لا تستخدم كثيراً)
 async function maybeScheduledEvent(client, message, runtime) {
-    // لم تعد الطريقة المفضلة؛ الاعتماد على maybeScheduledRun الدورية
     return false;
 }
 
@@ -409,7 +497,6 @@ async function summarizeMemory(agentId, guildId, limit = 10) {
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
-// تصدير الدوال الجديدة
 module.exports = {
     humanizeDisplayName,
     getAccountSettings,
@@ -424,7 +511,8 @@ module.exports = {
     rememberActivity,
     maybeAutoEvent,
     maybeScheduledEvent,
-    maybeScheduledRun,        // ⬅️ جديد
+    maybeScheduledRun,
+    startScheduleTimers,       // ⬅️ الدالة الذكية الجديدة
     summarizeMemory,
     DEFAULT_ACCOUNT_SETTINGS,
     WIN_RE
