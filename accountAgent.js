@@ -47,6 +47,11 @@ const autoLocks = new Map();
 const scheduledLoops = new Map();
 const manualRunNoCredits = new Map(); // agentId:guildId -> true
 
+// ---------------------- مفتاح موحد لسلاسل الفعاليات ----------------------
+function seriesLockKey(agentId, guildId, channelId) {
+    return `${agentId}:${guildId}:${channelId}:event_series`;
+}
+
 // ---------------------- دالة كشف الفوز المحسّنة ----------------------
 function isWinMessage(message) {
     let fullText = message.content || '';
@@ -103,44 +108,42 @@ function isSlotActive(slot, nowMins) {
 async function runScheduleSession(client, guild, channel, runtime, slot) {
     const settings = await getAccountSettings(runtime.agentId, guild.id);
     const waitMs = Number(settings.event_wait_ms || 10000);
-    let started = false;
+    const key = seriesLockKey(runtime.agentId, guild.id, channel.id);
 
-    if (slot.type === 'range') {
-        const endMins = slotEndMinutes(slot);
-        while (nowInMinutes() <= endMins) {
-            await startEvent(client, guild, channel, runtime, null, !started, false);
-            started = true;
-            try {
+    // منع البدء إذا كانت هناك سلسلة نشطة بالفعل
+    if (autoLocks.get(key)) return;
+    autoLocks.set(key, true);
+
+    try {
+        let started = false;
+
+        if (slot.type === 'range') {
+            const endMins = slotEndMinutes(slot);
+            while (nowInMinutes() <= endMins) {
+                const game = await startEvent(client, guild, channel, runtime, null, !started, false);
+                started = true;
+                // انتظار رسالة فوز من نفس البوت الذي بدأ اللعبة، بدون مهلة زمنية
                 await channel.awaitMessages({
-                    filter: m => {
-                        if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
-                        return isWinMessage(m);
-                    },
-                    max: 1,
-                    time: 300_000,
-                    errors: ['time']
+                    filter: m => m.author.id === game.bot_id && isWinMessage(m),
+                    max: 1
                 });
-            } catch (_) {}
-            await new Promise(r => setTimeout(r, waitMs));
-        }
-    } else if (slot.type === 'count') {
-        let remaining = slot.count || 1;
-        while (remaining-- > 0) {
-            await startEvent(client, guild, channel, runtime, null, !started, false);
-            started = true;
-            try {
+                await new Promise(r => setTimeout(r, waitMs));
+            }
+        } else if (slot.type === 'count') {
+            let remaining = slot.count || 1;
+            while (remaining-- > 0) {
+                const game = await startEvent(client, guild, channel, runtime, null, !started, false);
+                started = true;
+                // انتظار رسالة فوز من نفس البوت، بدون مهلة
                 await channel.awaitMessages({
-                    filter: m => {
-                        if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
-                        return isWinMessage(m);
-                    },
-                    max: 1,
-                    time: 300_000,
-                    errors: ['time']
+                    filter: m => m.author.id === game.bot_id && isWinMessage(m),
+                    max: 1
                 });
-            } catch (_) {}
-            await new Promise(r => setTimeout(r, waitMs));
+                await new Promise(r => setTimeout(r, waitMs));
+            }
         }
+    } finally {
+        autoLocks.delete(key);
     }
 }
 
@@ -166,18 +169,18 @@ async function maybeScheduledRun(client, guild, channel, runtime) {
     const nowMins = nowInMinutes();
     for (const slot of config.slots) {
         if (isSlotActive(slot, nowMins)) {
-            const key = `${runtime.agentId}:${guild.id}:${channel.id}:schedule`;
+            const key = seriesLockKey(runtime.agentId, guild.id, channel.id);
+            // إذا كانت هناك أي سلسلة فعاليات (يدوية/تلقائية/جدولة) تعمل بالفعل، لا تبدأ
             if (autoLocks.get(key)) continue;
-            autoLocks.set(key, true);
-            
+
             if (config.frequency === 'once') {
                 const { updateAccountSettings } = require('./accountAgent');
                 await updateAccountSettings(runtime.agentId, guild.id, { schedule_config: { ...config, executed_once: true } });
             }
 
+            // runScheduleSession ستتولى إدارة القفل بنفسها
             runScheduleSession(client, guild, channel, runtime, slot)
-                .catch(() => {})
-                .finally(() => autoLocks.delete(key));
+                .catch(() => {});
             break;
         }
     }
@@ -478,7 +481,7 @@ async function runEventSeries(client, guild, channel, runtime, options = {}) {
     const countLimit = Math.max(1, Math.min(Number(options.count || fallbackCount), 50));
     const startedAt = Date.now();
     const results = [];
-    const key = `${runtime.agentId}:${guild.id}:${channel.id}:series`;
+    const key = seriesLockKey(runtime.agentId, guild.id, channel.id);
     if (autoLocks.get(key)) return { ok: false, msg: 'هناك سلسلة فعاليات تعمل بالفعل لهذه القناة.', results };
     autoLocks.set(key, true);
     try {
@@ -526,7 +529,11 @@ async function maybeAutoEvent(client, message, runtime) {
     const settings = await getAccountSettings(runtime.agentId, message.guild.id);
     if (settings.mode !== 'auto') return false;
     const channelId = settings.event_channel_id || message.channel.id;
-    const key = `${runtime.agentId}:${message.guild.id}:${channelId}`;
+    const key = seriesLockKey(runtime.agentId, message.guild.id, channelId);
+
+    // إذا كانت هناك سلسلة نشطة بالفعل، لا تبدأ
+    if (autoLocks.get(key)) return false;
+
     const last = await require('./config').logs_col.findOne({
         agent_id: String(runtime.agentId),
         guild_id: String(message.guild.id),
@@ -537,15 +544,16 @@ async function maybeAutoEvent(client, message, runtime) {
     if (last?.created_at && Date.now() - new Date(last.created_at).getTime() < inactiveMs) return false;
     const recentCount = (activity.get(key) || []).filter(ts => Date.now() - ts < 10 * 60 * 1000).length;
     if (recentCount > Number(settings.auto_min_messages_10m || 3)) return false;
-    if (autoLocks.get(key)) return false;
+
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !isTextChannel(channel)) return false;
-    autoLocks.set(key, true);
+
+    // runEventSeries ستتولى إدارة القفل بنفسها
     runEventSeries(client, message.guild, channel, runtime, {
         count: settings.auto_run_count || 3,
         minutes: settings.auto_run_minutes || 0,
         first: !last
-    }).catch(() => {}).finally(() => autoLocks.delete(key));
+    }).catch(() => {});
     return true;
 }
 
