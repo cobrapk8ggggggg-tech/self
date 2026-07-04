@@ -46,7 +46,7 @@ function humanizeDisplayName(name) {
     const compact = raw
         .normalize('NFKD')
         .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[._~`^*|\[\]{}()<>،,؛:;!؟?\-_=+]/g, ' ')
+        .replace(/[._~`^*|\[\]{}()<>،,؛:;!?\-_=+]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
     if (/^s\s*u\s*k\s*u\s*n\s*a$/i.test(compact)) return 'سوكونا';
@@ -169,7 +169,32 @@ async function trackGameMessage(client, message, runtime) {
     if (!message.guild || !message.author?.bot) return false;
     const settings = await getAccountSettings(runtime.agentId, message.guild.id);
     if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
-    if (!WIN_RE.test(message.content || '')) return false;
+
+    // جمع النص الكامل من محتوى الرسالة والـ embeds
+    let fullText = message.content || '';
+    if (message.embeds && message.embeds.length > 0) {
+        for (const embed of message.embeds) {
+            if (embed.description) fullText += ' ' + embed.description;
+            if (embed.fields) {
+                for (const field of embed.fields) {
+                    fullText += ' ' + (field.name || '') + ' ' + (field.value || '');
+                }
+            }
+            if (embed.title) fullText += ' ' + embed.title;
+            // يمكن إضافة نصوص أخرى مثل footer, author إن أردت لكن نكتفي بالأساسي
+        }
+    }
+
+    // تنظيف النص للمقارنة (إزالة المسافات الزائدة)
+    const normalizedText = fullText.replace(/\s+/g, ' ').trim();
+
+    // استثناء الرسالة المحددة بالضبط (بغض النظر عن وجودها في content أو embed)
+    const EXCLUDED_TEXT = '🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟';
+    if (normalizedText.includes(EXCLUDED_TEXT)) return false;
+
+    // التحقق من وجود كلمة فوز أو ما شابهها
+    if (!WIN_RE.test(normalizedText)) return false;
+
     const deliveries = await client.channels.fetch(settings.deliveries_channel_id).catch(() => null);
     if (!deliveries || !isTextChannel(deliveries)) return false;
     const forwarded = await message.forward(deliveries).catch(() => null);
