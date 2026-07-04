@@ -18,7 +18,11 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     auto_inactivity_minutes: 20,
     auto_run_count: 3,
     auto_run_minutes: 0,
-    schedule_slots: [],
+    schedule_config: {           // ⬅️ تم الاستبدال
+        frequency: null,         // 'once', 'daily', 'days'
+        days_count: 1,
+        slots: []                // [{ type:'range'|'count', start:{h,m}, end?:{h,m}, count?:number }]
+    },
     event_wait_ms: 10000,
     first_event_announces_everyone: true,
     games: [
@@ -40,6 +44,120 @@ const activity = new Map();
 const autoLocks = new Map();
 const scheduledLoops = new Map();
 
+// ---------------------- توابع مساعدة للجدولة الجديدة ----------------------
+function nowInMinutes() {
+    const d = new Date();
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+function slotActive(slot, nowMins) {
+    if (slot.type === 'range') {
+        const start = (slot.start.hour || 0) * 60 + (slot.start.minute || 0);
+        const end = (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
+        return nowMins >= start && nowMins <= end;
+    } else if (slot.type === 'count') {
+        const start = (slot.start.hour || 0) * 60 + (slot.start.minute || 0);
+        // يعتبر نشطاً إذا مرت دقيقة البداية ولم ننته بعد من العدد المطلوب (تتم متابعته داخل الجلسة)
+        return nowMins >= start;
+    }
+    return false;
+}
+
+async function runScheduleSession(client, guild, channel, runtime, slot) {
+    const settings = await getAccountSettings(runtime.agentId, guild.id);
+    const waitMs = Number(settings.event_wait_ms || 10000);
+    let started = false;
+
+    if (slot.type === 'range') {
+        const endMins = (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
+        while (nowInMinutes() <= endMins) {
+            const game = await startEvent(client, guild, channel, runtime, null, !started);
+            started = true;
+            // انتظار رسالة الفوز
+            try {
+                await channel.awaitMessages({
+                    filter: m => {
+                        if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
+                        let text = m.content || '';
+                        if (m.embeds?.length) {
+                            for (const e of m.embeds) {
+                                if (e.description) text += ' ' + e.description;
+                                if (e.title) text += ' ' + e.title;
+                                if (e.fields) for (const f of e.fields) text += ' ' + (f.name||'') + ' ' + (f.value||'');
+                            }
+                        }
+                        if (text.includes('🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟')) return false;
+                        return WIN_RE.test(text);
+                    },
+                    max: 1,
+                    time: 300_000,
+                    errors: ['time']
+                });
+            } catch (_) {}
+            await new Promise(r => setTimeout(r, waitMs));
+        }
+    } else if (slot.type === 'count') {
+        let remaining = slot.count || 1;
+        while (remaining-- > 0) {
+            const game = await startEvent(client, guild, channel, runtime, null, !started);
+            started = true;
+            try {
+                await channel.awaitMessages({
+                    filter: m => {
+                        if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
+                        let text = m.content || '';
+                        if (m.embeds?.length) {
+                            for (const e of m.embeds) {
+                                if (e.description) text += ' ' + e.description;
+                                if (e.title) text += ' ' + e.title;
+                                if (e.fields) for (const f of e.fields) text += ' ' + (f.name||'') + ' ' + (f.value||'');
+                            }
+                        }
+                        if (text.includes('🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟')) return false;
+                        return WIN_RE.test(text);
+                    },
+                    max: 1,
+                    time: 300_000,
+                    errors: ['time']
+                });
+            } catch (_) {}
+            await new Promise(r => setTimeout(r, waitMs));
+        }
+    }
+}
+
+async function maybeScheduledRun(client, guild, channel, runtime) {
+    const settings = await getAccountSettings(runtime.agentId, guild.id);
+    if (settings.mode !== 'schedule' || !settings.schedule_config?.slots?.length) return;
+    const config = settings.schedule_config;
+    const today = new Date();
+    const dayOfYear = Math.floor((today - new Date(today.getFullYear(), 0, 0)) / 86400000);
+
+    // التحقق من التردد
+    if (config.frequency === 'once') {
+        // يفترض أن يحدد تاريخ انتهاء؛ للتبسيط نتحقق مما إذا كان اليوم هو تاريخ البدء (الذي يُخزّن). يمكن إضافة start_date لاحقاً.
+        // حالياً: نسمح بالعمل مرة واحدة فقط عند تفعيله لأول مرة.
+        if (scheduledLoops.get(`${runtime.agentId}:${guild.id}:schedule_done`)) return;
+    } else if (config.frequency === 'days') {
+        // افتراضياً يحسب من تاريخ التفعيل. سنخزّن تاريخ التفعيل.
+        // حالياً: نترك المجال مفتوحاً ويمكن إضافة start_date لاحقاً.
+    }
+
+    const nowMins = nowInMinutes();
+    for (const slot of config.slots) {
+        if (slotActive(slot, nowMins)) {
+            const key = `${runtime.agentId}:${guild.id}:${channel.id}:schedule`;
+            if (autoLocks.get(key)) continue;
+            autoLocks.set(key, true);
+            runScheduleSession(client, guild, channel, runtime, slot)
+                .catch(() => {})
+                .finally(() => autoLocks.delete(key));
+            break; // شغّل أول فتحة متاحة فقط
+        }
+    }
+}
+
+// ---------------------- بقية الدوال الأصلية (مع تعديل trackGameMessage لقراءة embeds) ----------------------
 
 function humanizeDisplayName(name) {
     const raw = String(name || '').trim();
@@ -54,7 +172,12 @@ function humanizeDisplayName(name) {
 }
 
 function mergeSettings(doc) {
-    return { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
+    const merged = { ...DEFAULT_ACCOUNT_SETTINGS, ...(doc?.account || {}) };
+    // ضمان أن schedule_config كائن صحيح
+    if (!merged.schedule_config || typeof merged.schedule_config !== 'object') {
+        merged.schedule_config = { frequency: null, days_count: 1, slots: [] };
+    }
+    return merged;
 }
 
 async function getAccountSettings(agentId, guildId) {
@@ -170,7 +293,6 @@ async function trackGameMessage(client, message, runtime) {
     const settings = await getAccountSettings(runtime.agentId, message.guild.id);
     if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
 
-    // جمع النص الكامل من محتوى الرسالة والـ embeds
     let fullText = message.content || '';
     if (message.embeds && message.embeds.length > 0) {
         for (const embed of message.embeds) {
@@ -181,18 +303,11 @@ async function trackGameMessage(client, message, runtime) {
                 }
             }
             if (embed.title) fullText += ' ' + embed.title;
-            // يمكن إضافة نصوص أخرى مثل footer, author إن أردت لكن نكتفي بالأساسي
         }
     }
-
-    // تنظيف النص للمقارنة (إزالة المسافات الزائدة)
     const normalizedText = fullText.replace(/\s+/g, ' ').trim();
-
-    // استثناء الرسالة المحددة بالضبط (بغض النظر عن وجودها في content أو embed)
     const EXCLUDED_TEXT = '🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟';
     if (normalizedText.includes(EXCLUDED_TEXT)) return false;
-
-    // التحقق من وجود كلمة فوز أو ما شابهها
     if (!WIN_RE.test(normalizedText)) return false;
 
     const deliveries = await client.channels.fetch(settings.deliveries_channel_id).catch(() => null);
@@ -254,26 +369,10 @@ function parseScheduleSlot(slot) {
     return { start, end, count: Number(m[5] || 0) };
 }
 
+// الدالة القديمة للإبقاء على التوافق (لا تستخدم كثيراً)
 async function maybeScheduledEvent(client, message, runtime) {
-    if (!message.guild || message.author?.bot) return false;
-    const settings = await getAccountSettings(runtime.agentId, message.guild.id);
-    if (settings.mode !== 'schedule') return false;
-    const slots = Array.isArray(settings.schedule_slots) ? settings.schedule_slots : [];
-    if (!slots.length) return false;
-    const now = new Date();
-    const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const active = slots.map(parseScheduleSlot).find(s => s && minute >= s.start && minute <= s.end);
-    if (!active) return false;
-    const channelId = settings.event_channel_id || message.channel.id;
-    const stamp = now.toISOString().slice(0, 10) + ':' + active.start + '-' + active.end;
-    const key = `${runtime.agentId}:${message.guild.id}:${channelId}:schedule:${stamp}`;
-    if (scheduledLoops.get(key)) return false;
-    scheduledLoops.set(key, true);
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !isTextChannel(channel)) return false;
-    const minutes = Math.max(1, active.end - active.start);
-    runEventSeries(client, message.guild, channel, runtime, { count: active.count || settings.auto_run_count || 50, minutes, first: true }).catch(() => {});
-    return true;
+    // لم تعد الطريقة المفضلة؛ الاعتماد على maybeScheduledRun الدورية
+    return false;
 }
 
 function rememberActivity(agentId, message) {
@@ -310,6 +409,7 @@ async function summarizeMemory(agentId, guildId, limit = 10) {
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
+// تصدير الدوال الجديدة
 module.exports = {
     humanizeDisplayName,
     getAccountSettings,
@@ -324,6 +424,7 @@ module.exports = {
     rememberActivity,
     maybeAutoEvent,
     maybeScheduledEvent,
+    maybeScheduledRun,        // ⬅️ جديد
     summarizeMemory,
     DEFAULT_ACCOUNT_SETTINGS,
     WIN_RE
