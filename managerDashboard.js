@@ -1,4 +1,3 @@
-
 'use strict';
 
 const { ObjectId } = require('mongodb');
@@ -47,6 +46,9 @@ const DASHBOARD_COMMAND_ROUTES = Object.freeze({
     'النظام': 'system',
     'تشغيل-يدوي': 'manual_run',
 });
+
+// ---------- حالة بناء الجدولة ----------
+const scheduleBuilders = new Map(); // userId -> { agentId, guildId, step, frequency, days_count, slots:[] }
 
 function dashboardCommands() {
     return [
@@ -320,7 +322,6 @@ function safeModalValue(value, max) {
     return String(value || '').slice(0, max);
 }
 
-
 function conversationCreateModal(agentId) {
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:conversation_create_modal:${agentId}`).setTitle('إنشاء محادثة وكيل');
     modal.addComponents(
@@ -331,6 +332,7 @@ function conversationCreateModal(agentId) {
     return modal;
 }
 
+// ⬅️ لم نعد بحاجة إلى accountRunModal القديم، ولكن يمكن الإبقاء عليه للتوافق
 function accountRunModal(agentId) {
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:account_run_modal:${agentId}`).setTitle('إعدادات تشغيل الفعاليات');
     modal.addComponents(
@@ -454,12 +456,246 @@ async function updateInteraction(interaction, payload) {
     return interaction.reply(payload);
 }
 
+// ---------- واجهة بناء الجدولة ----------
+function scheduleSlotToLabel(slot, index) {
+    const to12 = (h, m) => {
+        const period = h >= 12 ? 'م' : 'ص';
+        const hour12 = h % 12 || 12;
+        return `${hour12}:${String(m).padStart(2,'0')} ${period}`;
+    };
+    if (slot.type === 'range') {
+        return `${index+1}. ${to12(slot.start.hour, slot.start.minute)} - ${to12(slot.end.hour, slot.end.minute)} (نطاق زمني)`;
+    } else {
+        return `${index+1}. ${to12(slot.start.hour, slot.start.minute)} / ${slot.count} فعاليات`;
+    }
+}
+
+function renderScheduleBuilder(state) {
+    const slotList = state.slots.length
+        ? state.slots.map((s, i) => scheduleSlotToLabel(s, i)).join('\n')
+        : 'لم تُضف أي فترات بعد.';
+    const freqLabel = state.frequency === 'once' ? 'اليوم فقط' : state.frequency === 'daily' ? 'يومي' : `${state.days_count} أيام`;
+    const emb = embed('🗓️ تكوين الجدولة', linesBlock([
+        `الوكيل: قيد التكوين`,
+        `التكرار: **${freqLabel}**`,
+        '',
+        '**الفترات الزمنية:**',
+        slotList,
+        '',
+        'استخدم الأزرار أدناه لإضافة فترات (نطاق زمني أو عدد فعاليات) ثم احفظ.',
+    ]), COLORS.info);
+    const components = [
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:schedule_set_freq`).setPlaceholder('اختر التكرار').addOptions([
+                { label: 'اليوم فقط', value: 'once' },
+                { label: 'يومي', value: 'daily' },
+                { label: 'عدد أيام', value: 'days' },
+            ]),
+        ),
+        ...rowsFromButtons([
+            button(`${DASH_PREFIX}:schedule_add_range`, 'نطاق زمني', ButtonStyle.Primary, '⏰'),
+            button(`${DASH_PREFIX}:schedule_add_count`, 'عدد فعاليات', ButtonStyle.Primary, '🔢'),
+            button(`${DASH_PREFIX}:schedule_remove`, 'حذف فترة', ButtonStyle.Danger, '🗑️', state.slots.length === 0),
+            button(`${DASH_PREFIX}:schedule_save`, '💾 حفظ', ButtonStyle.Success),
+            button(`${DASH_PREFIX}:schedule_cancel`, 'إلغاء', ButtonStyle.Secondary),
+        ]),
+    ];
+    return { embeds: [emb], components };
+}
+
+function hourSelect(customId, placeholder) {
+    const options = [];
+    for (let h = 0; h < 24; h++) {
+        const period = h >= 12 ? 'م' : 'ص';
+        const hour12 = h % 12 || 12;
+        options.push({ label: `${hour12}:00 ${period}`, value: String(h) });
+    }
+    return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder(placeholder).addOptions(options.slice(0,25))
+    );
+}
+
+function minuteSelect(customId, placeholder) {
+    return new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder(placeholder).addOptions([
+            { label: '00', value: '0' }, { label: '15', value: '15' }, { label: '30', value: '30' }, { label: '45', value: '45' }
+        ])
+    );
+}
+
+async function handleScheduleInteraction(interaction, manager) {
+    const id = interaction.customId;
+    const parts = id.split(':');
+    const userId = interaction.user.id;
+
+    // بدء المعالج من زر "تكوين الجدولة"
+    if (id.startsWith(`${DASH_PREFIX}:schedule_start:`)) {
+        const agentId = parts[2];
+        scheduleBuilders.set(userId, { agentId, guildId: interaction.guildId, step: 'main', frequency: 'daily', days_count: 1, slots: [] });
+        await interaction.update(renderScheduleBuilder(scheduleBuilders.get(userId)));
+        return true;
+    }
+
+    if (!scheduleBuilders.has(userId)) return false;
+    const state = scheduleBuilders.get(userId);
+
+    if (id === `${DASH_PREFIX}:schedule_set_freq`) {
+        const val = interaction.values[0];
+        if (val === 'once' || val === 'daily') {
+            state.frequency = val;
+            await interaction.update(renderScheduleBuilder(state));
+        } else if (val === 'days') {
+            state.step = 'days_count';
+            const row = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:schedule_days_count`).setPlaceholder('اختر عدد الأيام').addOptions(
+                    Array.from({length:30}, (_,i) => ({ label: `${i+1} أيام`, value: String(i+1) }))
+                )
+            );
+            await interaction.update({ embeds: [embed('🗓️ عدد الأيام', 'اختر عدد الأيام التي تبدأ من اليوم.')], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        }
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_days_count`) {
+        state.days_count = parseInt(interaction.values[0], 10);
+        state.frequency = 'days';
+        state.step = 'main';
+        await interaction.update(renderScheduleBuilder(state));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_back`) {
+        state.step = 'main';
+        await interaction.update(renderScheduleBuilder(state));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_add_range`) {
+        state.step = 'range_start_hour';
+        await interaction.update({ embeds: [embed('⏰ نطاق زمني - ساعة البداية', 'اختر ساعة البداية (نظام 12 ساعة).')], components: [hourSelect(`${DASH_PREFIX}:schedule_range_start_hour`, 'ساعة البداية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_range_start_hour`) {
+        const hour = parseInt(interaction.values[0], 10);
+        state.tempSlot = { type: 'range', start: { hour } };
+        state.step = 'range_start_minute';
+        await interaction.update({ embeds: [embed('⏰ نطاق زمني - دقيقة البداية', 'اختر دقيقة البداية.')], components: [minuteSelect(`${DASH_PREFIX}:schedule_range_start_min`, 'دقيقة البداية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_range_start_min`) {
+        state.tempSlot.start.minute = parseInt(interaction.values[0], 10);
+        state.step = 'range_end_hour';
+        await interaction.update({ embeds: [embed('⏰ نطاق زمني - ساعة النهاية', 'اختر ساعة النهاية.')], components: [hourSelect(`${DASH_PREFIX}:schedule_range_end_hour`, 'ساعة النهاية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_range_end_hour`) {
+        const hour = parseInt(interaction.values[0], 10);
+        state.tempSlot.end = { hour };
+        state.step = 'range_end_minute';
+        await interaction.update({ embeds: [embed('⏰ نطاق زمني - دقيقة النهاية', 'اختر دقيقة النهاية.')], components: [minuteSelect(`${DASH_PREFIX}:schedule_range_end_min`, 'دقيقة النهاية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_range_end_min`) {
+        state.tempSlot.end.minute = parseInt(interaction.values[0], 10);
+        state.slots.push(state.tempSlot);
+        delete state.tempSlot;
+        state.step = 'main';
+        await interaction.update(renderScheduleBuilder(state));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_add_count`) {
+        state.step = 'count_start_hour';
+        await interaction.update({ embeds: [embed('🔢 عدد فعاليات - ساعة البداية', 'اختر ساعة بدء الفعاليات.')], components: [hourSelect(`${DASH_PREFIX}:schedule_count_start_hour`, 'ساعة البداية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_count_start_hour`) {
+        const hour = parseInt(interaction.values[0], 10);
+        state.tempSlot = { type: 'count', start: { hour } };
+        state.step = 'count_start_minute';
+        await interaction.update({ embeds: [embed('🔢 عدد فعاليات - دقيقة البداية', 'اختر دقيقة البداية.')], components: [minuteSelect(`${DASH_PREFIX}:schedule_count_start_min`, 'دقيقة البداية'), ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_count_start_min`) {
+        state.tempSlot.start.minute = parseInt(interaction.values[0], 10);
+        state.step = 'count_value';
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:schedule_count_value`).setPlaceholder('اختر عدد الفعاليات').addOptions(
+                Array.from({length:25}, (_,i) => ({ label: `${i+1}`, value: String(i+1) }))
+            )
+        );
+        await interaction.update({ embeds: [embed('🔢 عدد فعاليات - العدد', 'اختر عدد الفعاليات.')], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_count_value`) {
+        state.tempSlot.count = parseInt(interaction.values[0], 10);
+        state.slots.push(state.tempSlot);
+        delete state.tempSlot;
+        state.step = 'main';
+        await interaction.update(renderScheduleBuilder(state));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_remove`) {
+        if (state.slots.length === 0) return true;
+        const options = state.slots.map((s, i) => ({ label: scheduleSlotToLabel(s, i).slice(0,100), value: String(i) }));
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:schedule_remove_select`).setPlaceholder('اختر فترة للحذف').addOptions(options)
+        );
+        await interaction.update({ embeds: [embed('🗑️ حذف فترة', 'اختر الفترة التي تريد حذفها.')], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:schedule_back`, 'رجوع', ButtonStyle.Secondary)])] });
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_remove_select`) {
+        const idx = parseInt(interaction.values[0], 10);
+        state.slots.splice(idx, 1);
+        state.step = 'main';
+        await interaction.update(renderScheduleBuilder(state));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_save`) {
+        const { updateAccountSettings } = require('./accountAgent');
+        await updateAccountSettings(state.agentId, state.guildId, {
+            schedule_config: {
+                frequency: state.frequency,
+                days_count: state.days_count,
+                slots: state.slots,
+            }
+        });
+        scheduleBuilders.delete(userId);
+        await interaction.update(await renderAccountAdvanced(state.agentId, state.guildId));
+        return true;
+    }
+
+    if (id === `${DASH_PREFIX}:schedule_cancel`) {
+        scheduleBuilders.delete(userId);
+        await interaction.update(await renderAccountAdvanced(state.agentId, state.guildId));
+        return true;
+    }
+
+    return false;
+}
+
+// ---------- معالج التفاعلات الرئيسي ----------
 async function handleDashboardInteraction(interaction, manager) {
     const commandRoute = interaction.isChatInputCommand?.() ? dashboardCommandRoute(interaction.commandName) : null;
     const commandOk = Boolean(commandRoute);
     const componentOk = interaction.customId && interaction.customId.startsWith(`${DASH_PREFIX}:`);
     if (!commandOk && !componentOk) return false;
     if (!await requireAccess(interaction)) return true;
+
+    // معالجة تفاعلات الجدولة الجديدة أولاً
+    if (interaction.customId && interaction.customId.startsWith(`${DASH_PREFIX}:schedule_`)) {
+        return handleScheduleInteraction(interaction, manager);
+    }
 
     if (commandOk) {
         if (commandRoute === 'manual_run') {
@@ -618,6 +854,7 @@ async function handleDashboardInteraction(interaction, manager) {
     }
 
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:account_run_modal:`)) {
+        // هذا المودال القديم يبقى للتوافق، لكن يفضل استخدام المعالج الجديد
         const agentId = parts[2];
         const { updateAccountSettings } = require('./accountAgent');
         const patch = {
@@ -712,7 +949,11 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
         if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
         if (action === 'conversation_create') { await interaction.showModal(conversationCreateModal(agentId)); return true; }
-        if (action === 'account_run') { await interaction.showModal(accountRunModal(agentId)); return true; }
+        if (action === 'account_run') {
+            // في الواجهة الجديدة، زر "تكوين الجدولة" أخذ مكانه، لكن إن وصل هنا نعرض المودال القديم للتوافق
+            await interaction.showModal(accountRunModal(agentId));
+            return true;
+        }
         if (action === 'edit') {
             const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
             if (!agent) return updateInteraction(interaction, await renderAgent(manager, agentId));
@@ -747,8 +988,6 @@ async function handleDashboardInteraction(interaction, manager) {
 
     return false;
 }
-
-
 
 async function renderAccountSettings(agentId, guildId) {
     const cfg = require('./config');
@@ -798,7 +1037,6 @@ async function renderAccountSettings(agentId, guildId) {
     ] };
 }
 
-
 async function renderAccountAdvanced(agentId, guildId) {
     const cfg = require('./config');
     const { getAccountSettings } = require('./accountAgent');
@@ -807,10 +1045,10 @@ async function renderAccountAdvanced(agentId, guildId) {
     const emb = embed('⚙️ إعدادات متقدمة للحساب والفعاليات', linesBlock([
         `الوكيل: **${agent?.name || 'غير معروف'}**`,
         `🟢 رول منشن الفعاليات: ${settings.event_role_id ? `<@&${settings.event_role_id}>` : 'غير محدد'}`,
-        `⚙️ الوضع الحالي: **${settings.mode === 'auto' ? 'تلقائي' : settings.mode === 'schedule' ? 'جدولة يومية' : 'يدوي'}**`,
+        `⚙️ الوضع الحالي: **${settings.mode === 'auto' ? 'تلقائي' : settings.mode === 'schedule' ? 'جدولة متقدمة' : 'يدوي'}**`,
         `🔁 اليدوي الافتراضي: **${settings.manual_default_count || 1}**`,
         `🤖 التلقائي: **${settings.auto_run_count || 3}** فعاليات / **${settings.auto_run_minutes || 0}** دقيقة`,
-        `🗓️ الجدول UTC: **${(settings.schedule_slots || []).join(', ') || 'غير محدد'}**`,
+        `🗓️ الجدولة: ${settings.schedule_config?.slots?.length ? 'مُعدّة' : 'غير مُعدّة'}`,
         `📣 أول فعالية: **${settings.first_event_announces_everyone ? '@everyone' : 'رول الفعاليات'}**`,
         `⏱️ انتظار اللوبي: **${Math.round(Number(settings.event_wait_ms || 40000) / 1000)}s**`,
         '',
@@ -824,12 +1062,13 @@ async function renderAccountAdvanced(agentId, guildId) {
             new StringSelectMenuBuilder().setCustomId(`${DASH_PREFIX}:agent:${agentId}:acct_mode`).setPlaceholder('اختر وضع الفعاليات').addOptions([
                 { label: 'يدوي', value: 'manual', description: 'لا يبدأ فعاليات إلا بأمر منك' },
                 { label: 'تلقائي', value: 'auto', description: 'يراقب الخمول ويبدأ فعاليات لتنشيط السيرفر' },
-                { label: 'جدولة يومية', value: 'schedule', description: 'يشغل الفعاليات يومياً ضمن أوقات محددة' },
+                { label: 'جدولة (متقدمة)', value: 'schedule', description: 'يشغل الفعاليات حسب الجدول المُعد' },
             ]),
         ),
         ...rowsFromButtons([
             button(`${DASH_PREFIX}:agent:${agentId}:account`, 'رجوع للحساب', ButtonStyle.Secondary, ICONS.back),
-            button(`${DASH_PREFIX}:agent:${agentId}:account_run`, 'تشغيل/جدولة', ButtonStyle.Primary, '🗓️'), button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
+            button(`${DASH_PREFIX}:schedule_start:${agentId}`, '🗓️ تكوين الجدولة', ButtonStyle.Primary), // زر المعالج الجديد
+            button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
         ]),
     ] };
 }
