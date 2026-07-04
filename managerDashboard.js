@@ -69,7 +69,15 @@ function dashboardCommands() {
                     .setDescription('عدد الفعاليات')
                     .setRequired(true)
                     .setMinValue(1)
-                    .setMaxValue(25)),
+                    .setMaxValue(25))
+            .addStringOption(opt =>
+                opt.setName('mode')
+                    .setDescription('وضع الكردت')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'مع كردت', value: 'credits' },
+                        { name: 'بدون كردت', value: 'no_credits' }
+                    )),
     ];
 }
 
@@ -332,7 +340,6 @@ function conversationCreateModal(agentId) {
     return modal;
 }
 
-// ⬅️ لم نعد بحاجة إلى accountRunModal القديم، ولكن يمكن الإبقاء عليه للتوافق
 function accountRunModal(agentId) {
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:account_run_modal:${agentId}`).setTitle('إعدادات تشغيل الفعاليات');
     modal.addComponents(
@@ -528,7 +535,6 @@ async function handleScheduleInteraction(interaction, manager) {
     const parts = id.split(':');
     const userId = interaction.user.id;
 
-    // بدء المعالج من زر "تكوين الجدولة"
     if (id.startsWith(`${DASH_PREFIX}:schedule_start:`)) {
         const agentId = parts[2];
         scheduleBuilders.set(userId, { agentId, guildId: interaction.guildId, step: 'main', frequency: 'daily', days_count: 1, slots: [] });
@@ -692,7 +698,6 @@ async function handleDashboardInteraction(interaction, manager) {
     if (!commandOk && !componentOk) return false;
     if (!await requireAccess(interaction)) return true;
 
-    // معالجة تفاعلات الجدولة الجديدة أولاً
     if (interaction.customId && interaction.customId.startsWith(`${DASH_PREFIX}:schedule_`)) {
         return handleScheduleInteraction(interaction, manager);
     }
@@ -701,6 +706,7 @@ async function handleDashboardInteraction(interaction, manager) {
         if (commandRoute === 'manual_run') {
             const cfg = require('./config');
             const count = interaction.options.getInteger('count', true);
+            const mode = interaction.options.getString('mode', true); // 'credits' أو 'no_credits'
             const agents = await cfg.agents_col.find({}).sort({ name: 1 }).limit(25).toArray();
             if (!agents.length) {
                 await interaction.reply({ embeds: [embed('❌ لا يوجد وكلاء', linesBlock(['لا يوجد وكلاء في قاعدة البيانات.']), COLORS.danger)], ephemeral: true });
@@ -709,10 +715,11 @@ async function handleDashboardInteraction(interaction, manager) {
             const emb = embed('🔧 تشغيل يدوي', linesBlock([
                 '**اختر الوكيل الذي تريد تشغيل الفعاليات له.**',
                 `عدد الفعاليات المطلوبة: **${count}**`,
+                `الوضع: **${mode === 'no_credits' ? 'بدون كردت (أول فعالية فقط 5m)' : 'مع كردت'}**`,
             ]), COLORS.info);
             const row = new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder()
-                    .setCustomId(`${DASH_PREFIX}:manual_run_select:${count}`)
+                    .setCustomId(`${DASH_PREFIX}:manual_run_select:${count}:${mode}`)
                     .setPlaceholder('اختر الوكيل')
                     .addOptions(agents.map(agentOption)),
             );
@@ -734,10 +741,15 @@ async function handleDashboardInteraction(interaction, manager) {
     const parts = id.split(':');
 
     if (id.startsWith(`${DASH_PREFIX}:manual_run_select:`)) {
-        const count = parseInt(parts[2], 10);
+        // التقسيم الصحيح: dash:manual_run_select:COUNT:MODE
+        const partsManual = id.split(':');
+        const count = parseInt(partsManual[2], 10);
+        const mode = partsManual[3] || 'credits';
         const agentId = interaction.values[0];
+        const noCredits = mode === 'no_credits';
+
         const cfg = require('./config');
-        const { startEvent, WIN_RE } = require('./accountAgent');
+        const { startEvent, WIN_RE, manualRunNoCredits } = require('./accountAgent');
         const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
         if (!agent) {
             await interaction.update({ embeds: [embed('❌ وكيل غير صالح', linesBlock(['الوكيل المختار لم يعد موجوداً.']), COLORS.danger)], components: [] });
@@ -763,12 +775,18 @@ async function handleDashboardInteraction(interaction, manager) {
             return true;
         }
 
-        await interaction.update({ embeds: [embed('⏳ جاري تشغيل الفعاليات', linesBlock([`الوكيل: **${agent.name || agentId}**`, `عدد الفعاليات: **${count}**`, 'سيتم إرسال الفعالية التالية بعد ظهور نتيجة الفعالية السابقة.']), COLORS.info)], components: [] });
+        // منع توجيه النتائج إلى قناة التسليمات
+        const noCreditsKey = `${agentId}:${interaction.guildId}`;
+        if (noCredits) {
+            manualRunNoCredits.set(noCreditsKey, true);
+        }
+
+        await interaction.update({ embeds: [embed('⏳ جاري تشغيل الفعاليات', linesBlock([`الوكيل: **${agent.name || agentId}**`, `عدد الفعاليات: **${count}**`, `الوضع: **${noCredits ? 'بدون كردت' : 'مع كردت'}**`, 'سيتم إرسال الفعالية التالية بعد ظهور نتيجة الفعالية السابقة.']), COLORS.info)], components: [] });
 
         try {
             let completed = 0;
             for (let i = 0; i < count; i++) {
-                const game = await startEvent(runtime.client, agentGuild, agentChannel, runtime, null, i === 0);
+                const game = await startEvent(runtime.client, agentGuild, agentChannel, runtime, null, i === 0, noCredits);
                 try {
                     await agentChannel.awaitMessages({
                         filter: m => m.author.bot && WIN_RE.test(m.content),
@@ -782,6 +800,10 @@ async function handleDashboardInteraction(interaction, manager) {
             await interaction.followUp({ embeds: [embed('✅ اكتملت الفعاليات', linesBlock([`تم تشغيل **${completed}** فعالية بنجاح عبر الوكيل **${agent.name || agentId}**`]), COLORS.success)], ephemeral: true });
         } catch (err) {
             await interaction.followUp({ embeds: [embed('❌ خطأ', linesBlock([`حدث خطأ أثناء تشغيل الفعاليات: ${err.message}`]), COLORS.danger)], ephemeral: true });
+        } finally {
+            if (noCredits) {
+                manualRunNoCredits.delete(noCreditsKey);
+            }
         }
         return true;
     }
@@ -854,7 +876,6 @@ async function handleDashboardInteraction(interaction, manager) {
     }
 
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:account_run_modal:`)) {
-        // هذا المودال القديم يبقى للتوافق، لكن يفضل استخدام المعالج الجديد
         const agentId = parts[2];
         const { updateAccountSettings } = require('./accountAgent');
         const patch = {
@@ -950,7 +971,6 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
         if (action === 'conversation_create') { await interaction.showModal(conversationCreateModal(agentId)); return true; }
         if (action === 'account_run') {
-            // في الواجهة الجديدة، زر "تكوين الجدولة" أخذ مكانه، لكن إن وصل هنا نعرض المودال القديم للتوافق
             await interaction.showModal(accountRunModal(agentId));
             return true;
         }
@@ -1067,7 +1087,7 @@ async function renderAccountAdvanced(agentId, guildId) {
         ),
         ...rowsFromButtons([
             button(`${DASH_PREFIX}:agent:${agentId}:account`, 'رجوع للحساب', ButtonStyle.Secondary, ICONS.back),
-            button(`${DASH_PREFIX}:schedule_start:${agentId}`, '🗓️ تكوين الجدولة', ButtonStyle.Primary), // زر المعالج الجديد
+            button(`${DASH_PREFIX}:schedule_start:${agentId}`, '🗓️ تكوين الجدولة', ButtonStyle.Primary),
             button(`${DASH_PREFIX}:agent:${agentId}:account_adv`, 'تحديث', ButtonStyle.Secondary, ICONS.refresh),
         ]),
     ] };
