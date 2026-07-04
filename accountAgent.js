@@ -486,7 +486,13 @@ async function runEventSeries(client, guild, channel, runtime, options = {}) {
             if (minutesLimit && Date.now() - startedAt >= minutesLimit * 60 * 1000) break;
             const game = await startEvent(client, guild, channel, runtime, options.gameName || null, i === 0 && Boolean(options.first), false);
             results.push(game);
-            if (i < countLimit - 1) await new Promise(r => setTimeout(r, Number(settings.event_wait_ms || 10000)));
+            if (i < countLimit - 1) {
+                // انتظار رسالة فوز من بوت اللعبة الذي شغّلناه في نفس القناة، بدون مهلة زمنية
+                await channel.awaitMessages({
+                    filter: m => m.author.id === game.bot_id && isWinMessage(m),
+                    max: 1
+                });
+            }
         }
         return { ok: true, msg: `تم تشغيل ${results.length} فعالية.`, results };
     } finally {
