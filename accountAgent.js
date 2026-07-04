@@ -45,6 +45,7 @@ const memory = new Map();
 const activity = new Map();
 const autoLocks = new Map();
 const scheduledLoops = new Map();
+const manualRunNoCredits = new Map(); // agentId:guildId -> true
 
 // ---------------------- دالة كشف الفوز المحسّنة ----------------------
 function isWinMessage(message) {
@@ -107,7 +108,7 @@ async function runScheduleSession(client, guild, channel, runtime, slot) {
     if (slot.type === 'range') {
         const endMins = slotEndMinutes(slot);
         while (nowInMinutes() <= endMins) {
-            await startEvent(client, guild, channel, runtime, null, !started);
+            await startEvent(client, guild, channel, runtime, null, !started, false);
             started = true;
             try {
                 await channel.awaitMessages({
@@ -125,7 +126,7 @@ async function runScheduleSession(client, guild, channel, runtime, slot) {
     } else if (slot.type === 'count') {
         let remaining = slot.count || 1;
         while (remaining-- > 0) {
-            await startEvent(client, guild, channel, runtime, null, !started);
+            await startEvent(client, guild, channel, runtime, null, !started, false);
             started = true;
             try {
                 await channel.awaitMessages({
@@ -385,7 +386,11 @@ async function trackGameMessage(client, message, runtime) {
     if (!message.guild || !message.author?.bot) return false;
     const settings = await getAccountSettings(runtime.agentId, message.guild.id);
 
-    // في وضع no_credits لا نرسل أي نتيجة إلى قناة التسليمات
+    // إذا كانت هناك جلسة تشغيل يدوي بدون كردت، لا يتم التوجيه
+    const noCreditsKey = `${runtime.agentId}:${message.guild.id}`;
+    if (manualRunNoCredits.get(noCreditsKey)) return false;
+
+    // في وضع no_credits الدائم لا نرسل أي نتيجة إلى قناة التسليمات
     if (settings.mode === 'no_credits') return false;
 
     if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
@@ -406,11 +411,9 @@ async function remember(agentId, guildId, event) {
 
 /**
  * بدء فعالية عشوائية مع توزيع عادل.
- * - أول فعالية (first=true) تكون من مجموعة (مافيا, روليت, غميضة) بمكافأة 5m.
- * - باقي الفعاليات تختار عشوائياً من جميع الألعاب وتجنب تكرار آخر 3 ألعاب.
- * - إذا كان الوضع no_credits: الفعالية الأولى فقط بمكافأة 5m، والباقي بدون مكافأة.
+ * @param {boolean} noCredits - إذا كان true، الفعالية الأولى فقط بمكافأة، والباقي بدون (بغض النظر عن الإعدادات)
  */
-async function startEvent(client, guild, channel, runtime, gameName = null, first = false) {
+async function startEvent(client, guild, channel, runtime, gameName = null, first = false, noCredits = false) {
     const settings = await getAccountSettings(runtime.agentId, guild.id);
     const games = settings.games;
 
@@ -438,10 +441,11 @@ async function startEvent(client, guild, channel, runtime, gameName = null, firs
 
     const game = pool[Math.floor(Math.random() * pool.length)];
 
-    // تحديد المكافأة بناءً على الوضع
     let reward;
-    if (settings.mode === 'no_credits') {
-        reward = first ? game.first_reward : '';   // الأولى 5m، الباقي فارغ
+    if (noCredits) {
+        reward = first ? game.first_reward : '';
+    } else if (settings.mode === 'no_credits') {
+        reward = first ? game.first_reward : '';
     } else {
         reward = first ? game.first_reward : game.reward;
     }
@@ -451,7 +455,6 @@ async function startEvent(client, guild, channel, runtime, gameName = null, firs
         ? { parse: ['everyone'] }
         : { roles: [settings.event_role_id], parse: [] };
 
-    // بناء الرسالة: إذا كانت المكافأة فارغة لا نضيف مسافة زائدة
     const contentLine = reward ? `# ${game.name} ${reward}` : `# ${game.name}`;
     await channel.send({ content: `${contentLine}\n${mention}`, allowedMentions });
 
@@ -481,7 +484,7 @@ async function runEventSeries(client, guild, channel, runtime, options = {}) {
     try {
         for (let i = 0; i < countLimit; i++) {
             if (minutesLimit && Date.now() - startedAt >= minutesLimit * 60 * 1000) break;
-            const game = await startEvent(client, guild, channel, runtime, options.gameName || null, i === 0 && Boolean(options.first));
+            const game = await startEvent(client, guild, channel, runtime, options.gameName || null, i === 0 && Boolean(options.first), false);
             results.push(game);
             if (i < countLimit - 1) await new Promise(r => setTimeout(r, Number(settings.event_wait_ms || 10000)));
         }
@@ -569,5 +572,6 @@ module.exports = {
     summarizeMemory,
     DEFAULT_ACCOUNT_SETTINGS,
     WIN_RE,
-    isWinMessage
+    isWinMessage,
+    manualRunNoCredits   // تصدير الـ Map لاستخدامه من dashboard
 };
