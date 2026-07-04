@@ -46,6 +46,33 @@ const activity = new Map();
 const autoLocks = new Map();
 const scheduledLoops = new Map();
 
+// ---------------------- دالة كشف الفوز المحسّنة ----------------------
+function isWinMessage(message) {
+    let fullText = message.content || '';
+    if (message.embeds && message.embeds.length > 0) {
+        for (const embed of message.embeds) {
+            if (embed.description) fullText += ' ' + embed.description;
+            if (embed.title) fullText += ' ' + embed.title;
+            if (embed.fields) {
+                for (const field of embed.fields) {
+                    fullText += ' ' + (field.name || '') + ' ' + (field.value || '');
+                }
+            }
+        }
+    }
+    const text = fullText.replace(/\s+/g, ' ').trim();
+
+    if (text.includes('🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟')) return false;
+
+    if (/\*\*🏆 \| مبروك <@\d+>، انت الفائز في اللعبة!\*\*/.test(text)) return true;
+    if (/^# :z22: فوز المافيا!/.test(text)) return true;
+    if (/^# :z22: فوز المواطنين!/.test(text)) return true;
+    if (/^# 👑 - <@\d+> فاز باللعبة!/.test(text)) return true;
+    if (text.includes('أعضاء الفريق الفائز')) return true;
+
+    return false;
+}
+
 // ---------------------- دوال مساعدة للجدولة الذكية ----------------------
 function nowInMinutes() {
     const d = new Date();
@@ -60,7 +87,7 @@ function slotEndMinutes(slot) {
     if (slot.type === 'range') {
         return (slot.end.hour || 0) * 60 + (slot.end.minute || 0);
     }
-    return slotStartMinutes(slot); // للـ count يعتبر نفسه
+    return slotStartMinutes(slot);
 }
 
 function isSlotActive(slot, nowMins) {
@@ -80,22 +107,13 @@ async function runScheduleSession(client, guild, channel, runtime, slot) {
     if (slot.type === 'range') {
         const endMins = slotEndMinutes(slot);
         while (nowInMinutes() <= endMins) {
-            const game = await startEvent(client, guild, channel, runtime, null, !started);
+            await startEvent(client, guild, channel, runtime, null, !started);
             started = true;
             try {
                 await channel.awaitMessages({
                     filter: m => {
                         if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
-                        let text = m.content || '';
-                        if (m.embeds?.length) {
-                            for (const e of m.embeds) {
-                                if (e.description) text += ' ' + e.description;
-                                if (e.title) text += ' ' + e.title;
-                                if (e.fields) for (const f of e.fields) text += ' ' + (f.name||'') + ' ' + (f.value||'');
-                            }
-                        }
-                        if (text.includes('🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟')) return false;
-                        return WIN_RE.test(text);
+                        return isWinMessage(m);
                     },
                     max: 1,
                     time: 300_000,
@@ -107,22 +125,13 @@ async function runScheduleSession(client, guild, channel, runtime, slot) {
     } else if (slot.type === 'count') {
         let remaining = slot.count || 1;
         while (remaining-- > 0) {
-            const game = await startEvent(client, guild, channel, runtime, null, !started);
+            await startEvent(client, guild, channel, runtime, null, !started);
             started = true;
             try {
                 await channel.awaitMessages({
                     filter: m => {
                         if (!m.author.bot || !settings.games.some(g => String(g.bot_id) === String(m.author.id))) return false;
-                        let text = m.content || '';
-                        if (m.embeds?.length) {
-                            for (const e of m.embeds) {
-                                if (e.description) text += ' ' + e.description;
-                                if (e.title) text += ' ' + e.title;
-                                if (e.fields) for (const f of e.fields) text += ' ' + (f.name||'') + ' ' + (f.value||'');
-                            }
-                        }
-                        if (text.includes('🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟')) return false;
-                        return WIN_RE.test(text);
+                        return isWinMessage(m);
                     },
                     max: 1,
                     time: 300_000,
@@ -184,7 +193,6 @@ async function scheduleNextRun(manager) {
     const now = new Date();
     const nowMins = nowInMinutes();
 
-    // نجمع كل الفتحات القادمة من كل الوكلاء النشطين
     for (const [agentId, runtime] of manager.runtimes.entries()) {
         if (!runtime.client || !runtime.client.guilds) continue;
         for (const guild of runtime.client.guilds.cache.values()) {
@@ -193,7 +201,6 @@ async function scheduleNextRun(manager) {
                 if (!settings || settings.mode !== 'schedule' || !settings.schedule_config?.slots?.length) continue;
                 
                 const config = settings.schedule_config;
-                // تحقق من صلاحية الجدول زمنياً
                 if (config.frequency === 'once' && config.executed_once) continue;
                 if (config.frequency === 'days' && config.start_date) {
                     const start = new Date(config.start_date);
@@ -203,9 +210,8 @@ async function scheduleNextRun(manager) {
 
                 for (const slot of config.slots) {
                     const startMins = slotStartMinutes(slot);
-                    if (startMins <= nowMins) continue; // بدأ بالفعل أو فات
+                    if (startMins <= nowMins) continue;
                     
-                    // كم دقيقة متبقية؟
                     const diffMins = startMins - nowMins;
                     const timeoutMs = diffMins * 60 * 1000;
                     if (timeoutMs < nearestTimeout) {
@@ -219,7 +225,6 @@ async function scheduleNextRun(manager) {
     if (nearestTimeout !== Infinity && nearestTimeout > 0) {
         console.log(`⏳ أقرب جلسة جدولة بعد ${Math.round(nearestTimeout / 60000)} دقيقة`);
         mainScheduleTimer = setTimeout(async () => {
-            // نفذ الجلسات المستحقة الآن
             for (const [agentId, runtime] of manager.runtimes.entries()) {
                 if (!runtime.client || !runtime.client.guilds) continue;
                 for (const guild of runtime.client.guilds.cache.values()) {
@@ -234,7 +239,6 @@ async function scheduleNextRun(manager) {
                     } catch (_) {}
                 }
             }
-            // أعد الجدولة من جديد
             scheduleNextRun(manager);
         }, nearestTimeout);
     }
@@ -244,11 +248,10 @@ function startScheduleTimers(manager) {
     if (!manager || !manager.runtimes) return;
     console.log('⏳ بدء نظام الجدولة الذكي (مؤقت دقيق)...');
     scheduleNextRun(manager);
-    // نعيد الحساب كل 10 دقائق في حال تغيرت الإعدادات أو أُضيفت جداول جديدة
     setInterval(() => scheduleNextRun(manager), 600000);
 }
 
-// ---------------------- باقي الدوال بدون تغيير ----------------------
+// ---------------------- باقي الدوال ----------------------
 
 function humanizeDisplayName(name) {
     const raw = String(name || '').trim();
@@ -381,24 +384,13 @@ async function handleControlReply(client, message, runtime) {
 async function trackGameMessage(client, message, runtime) {
     if (!message.guild || !message.author?.bot) return false;
     const settings = await getAccountSettings(runtime.agentId, message.guild.id);
-    if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
 
-    let fullText = message.content || '';
-    if (message.embeds && message.embeds.length > 0) {
-        for (const embed of message.embeds) {
-            if (embed.description) fullText += ' ' + embed.description;
-            if (embed.fields) {
-                for (const field of embed.fields) {
-                    fullText += ' ' + (field.name || '') + ' ' + (field.value || '');
-                }
-            }
-            if (embed.title) fullText += ' ' + embed.title;
-        }
-    }
-    const normalizedText = fullText.replace(/\s+/g, ' ').trim();
-    const EXCLUDED_TEXT = '🏆 | تبقى لاعبين فقط ، من تختاره العجلة في الجولة التالية هو الفائز ، فهمت؟';
-    if (normalizedText.includes(EXCLUDED_TEXT)) return false;
-    if (!WIN_RE.test(normalizedText)) return false;
+    // في وضع no_credits لا نرسل أي نتيجة إلى قناة التسليمات
+    if (settings.mode === 'no_credits') return false;
+
+    if (!settings.games.some(g => String(g.bot_id) === String(message.author.id))) return false;
+    if (message.channel.id !== settings.event_channel_id) return false;
+    if (!isWinMessage(message)) return false;
 
     const deliveries = await client.channels.fetch(settings.deliveries_channel_id).catch(() => null);
     if (!deliveries || !isTextChannel(deliveries)) return false;
@@ -412,19 +404,67 @@ async function remember(agentId, guildId, event) {
     await cfg.logs_col.insertOne({ agent_id: String(agentId), guild_id: String(guildId), type: 'account_memory', message: event.type, extra: event, created_at: new Date() }).catch(() => {});
 }
 
+/**
+ * بدء فعالية عشوائية مع توزيع عادل.
+ * - أول فعالية (first=true) تكون من مجموعة (مافيا, روليت, غميضة) بمكافأة 5m.
+ * - باقي الفعاليات تختار عشوائياً من جميع الألعاب وتجنب تكرار آخر 3 ألعاب.
+ * - إذا كان الوضع no_credits: الفعالية الأولى فقط بمكافأة 5m، والباقي بدون مكافأة.
+ */
 async function startEvent(client, guild, channel, runtime, gameName = null, first = false) {
     const settings = await getAccountSettings(runtime.agentId, guild.id);
     const games = settings.games;
-    const last = await require('./config').logs_col.find({ agent_id: String(runtime.agentId), guild_id: String(guild.id), type: 'account_memory', message: 'event_start' }).sort({ created_at: -1 }).limit(3).toArray().catch(() => []);
-    const recent = new Set(last.map(x => x.extra?.game));
-    const game = games.find(g => gameName && g.name.includes(gameName)) || games.find(g => !recent.has(g.name)) || games[0];
-    const reward = first ? game.first_reward : game.reward;
+
+    const last = await require('./config').logs_col.find({
+        agent_id: String(runtime.agentId),
+        guild_id: String(guild.id),
+        type: 'account_memory',
+        message: 'event_start'
+    }).sort({ created_at: -1 }).limit(3).toArray().catch(() => []);
+    const recentNames = new Set(last.map(x => x.extra?.game));
+
+    let candidates;
+    if (gameName) {
+        candidates = games.filter(g => g.name.includes(gameName));
+        if (candidates.length === 0) candidates = games;
+    } else if (first) {
+        candidates = games.filter(g => g.first_reward === '5m' && ['مافيا', 'روليت', 'غميضه'].includes(g.name));
+        if (candidates.length === 0) candidates = games;
+    } else {
+        candidates = games;
+    }
+
+    let pool = candidates.filter(g => !recentNames.has(g.name));
+    if (pool.length === 0) pool = candidates;
+
+    const game = pool[Math.floor(Math.random() * pool.length)];
+
+    // تحديد المكافأة بناءً على الوضع
+    let reward;
+    if (settings.mode === 'no_credits') {
+        reward = first ? game.first_reward : '';   // الأولى 5m، الباقي فارغ
+    } else {
+        reward = first ? game.first_reward : game.reward;
+    }
+
     const mention = first && settings.first_event_announces_everyone ? '@everyone' : `<@&${settings.event_role_id}>`;
-    const allowedMentions = first && settings.first_event_announces_everyone ? { parse: ['everyone'] } : { roles: [settings.event_role_id], parse: [] };
-    await channel.send({ content: `# ${game.name} ${reward}\n${mention}`, allowedMentions });
+    const allowedMentions = first && settings.first_event_announces_everyone
+        ? { parse: ['everyone'] }
+        : { roles: [settings.event_role_id], parse: [] };
+
+    // بناء الرسالة: إذا كانت المكافأة فارغة لا نضيف مسافة زائدة
+    const contentLine = reward ? `# ${game.name} ${reward}` : `# ${game.name}`;
+    await channel.send({ content: `${contentLine}\n${mention}`, allowedMentions });
+
     await new Promise(r => setTimeout(r, Number(settings.event_wait_ms || 40000)));
     await channel.send(game.command);
-    await remember(runtime.agentId, guild.id, { type: 'event_start', game: game.name, command: game.command, bot_id: game.bot_id, channel_id: channel.id, by: client.user.id });
+    await remember(runtime.agentId, guild.id, {
+        type: 'event_start',
+        game: game.name,
+        command: game.command,
+        bot_id: game.bot_id,
+        channel_id: channel.id,
+        by: client.user.id
+    });
     return game;
 }
 
@@ -478,7 +518,12 @@ async function maybeAutoEvent(client, message, runtime) {
     if (settings.mode !== 'auto') return false;
     const channelId = settings.event_channel_id || message.channel.id;
     const key = `${runtime.agentId}:${message.guild.id}:${channelId}`;
-    const last = await require('./config').logs_col.findOne({ agent_id: String(runtime.agentId), guild_id: String(message.guild.id), type: 'account_memory', message: 'event_start' }, { sort: { created_at: -1 } }).catch(() => null);
+    const last = await require('./config').logs_col.findOne({
+        agent_id: String(runtime.agentId),
+        guild_id: String(message.guild.id),
+        type: 'account_memory',
+        message: 'event_start'
+    }, { sort: { created_at: -1 } }).catch(() => null);
     const inactiveMs = Number(settings.auto_inactivity_minutes || 20) * 60 * 1000;
     if (last?.created_at && Date.now() - new Date(last.created_at).getTime() < inactiveMs) return false;
     const recentCount = (activity.get(key) || []).filter(ts => Date.now() - ts < 10 * 60 * 1000).length;
@@ -487,13 +532,21 @@ async function maybeAutoEvent(client, message, runtime) {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !isTextChannel(channel)) return false;
     autoLocks.set(key, true);
-    runEventSeries(client, message.guild, channel, runtime, { count: settings.auto_run_count || 3, minutes: settings.auto_run_minutes || 0, first: !last }).catch(() => {}).finally(() => autoLocks.delete(key));
+    runEventSeries(client, message.guild, channel, runtime, {
+        count: settings.auto_run_count || 3,
+        minutes: settings.auto_run_minutes || 0,
+        first: !last
+    }).catch(() => {}).finally(() => autoLocks.delete(key));
     return true;
 }
 
 async function summarizeMemory(agentId, guildId, limit = 10) {
     const cfg = require('./config');
-    const rows = await cfg.logs_col.find({ agent_id: String(agentId), guild_id: String(guildId), type: 'account_memory' }).sort({ created_at: -1 }).limit(limit).toArray().catch(() => []);
+    const rows = await cfg.logs_col.find({
+        agent_id: String(agentId),
+        guild_id: String(guildId),
+        type: 'account_memory'
+    }).sort({ created_at: -1 }).limit(limit).toArray().catch(() => []);
     return rows.map(r => ({ at: r.created_at, kind: r.message, ...r.extra }));
 }
 
@@ -512,8 +565,9 @@ module.exports = {
     maybeAutoEvent,
     maybeScheduledEvent,
     maybeScheduledRun,
-    startScheduleTimers,       // ⬅️ الدالة الذكية الجديدة
+    startScheduleTimers,
     summarizeMemory,
     DEFAULT_ACCOUNT_SETTINGS,
-    WIN_RE
+    WIN_RE,
+    isWinMessage
 };
