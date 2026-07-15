@@ -1,7 +1,7 @@
 /**
  * tools/executeAction.js — Disor Bot v7.0 "Ironclad"
  * ═══════════════════════════════════════════════════════════
- * دالة _safePurge + دالة executeAction الرئيسية
+ * دالة _safePurge + safeApiCall + executeAction الرئيسية
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -17,82 +17,163 @@ const {
 } = require('../utils');
 
 // ══════════════════════════════════════════════════════════════
-//  SAFE PURGE — حذف آمن مع retry عند 429
+//  SAFE API CALL — غلاف لمكالمات Discord API مع معالجة 429
 // ══════════════════════════════════════════════════════════════
 
 /**
- * wrapper آمن لـ bulkDelete/purge — يتعامل مع 429 بشكل صحيح
+ * ينفذ استدعاء API مع إعادة محاولة ذكية عند 429
+ * @param {Function} apiCall - دالة غير متزامنة تنفذ طلب API
+ * @param {number} [maxRetries=3] - الحد الأقصى للمحاولات
+ * @returns {Promise<any>}
+ */
+async function safeApiCall(apiCall, maxRetries = 3) {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+        try {
+            return await apiCall();
+        } catch (e) {
+            if (e.httpStatus === 429 || e.status === 429) {
+                const retryAfter = (e.retryAfter || 2) * 1000;
+                // إذا كان Global Rate Limit (عادةً يظهر مع رسالة "Global rate limit exceeded") نوقف فوراً
+                if (e.global || String(e.message).includes('global')) {
+                    throw new Error('Global rate limit exceeded');
+                }
+                await new Promise(r => setTimeout(r, retryAfter));
+                attempt++;
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw new Error('Max retries exceeded');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SAFE PURGE — حذف آمن مع pagination صحيح
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * حذف آمن للرسائل - يدعم البوت والحساب الحقيقي
  * @param {import('discord.js').TextChannel} channel
  * @param {number} limit
- * @param {Function|null} checkFn - دالة فلترة اختيارية
- * @returns {Promise<number>} عدد الرسائل المحذوفة
+ * @param {Function|null} checkFn - فلترة اختيارية
+ * @param {string} tokenType - 'bot' أو 'user'
+ * @returns {Promise<number>}
  */
-async function _safePurge(channel, limit, checkFn = null) {
-    const fetchLimit = Math.min(limit, 100);
+async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
     let totalDeleted = 0;
-    let remaining    = Math.min(limit, 500);
+    let remaining = limit;
+    let beforeId = null;
+    const isUserToken = tokenType === 'user';
+    const deleteDelay = isUserToken ? 700 : 0; // تأخير بين الحذف الفردي للحساب الحقيقي (مللي ثانية)
 
     while (remaining > 0) {
         const toFetch = Math.min(remaining, 100);
+        const opts = { limit: toFetch };
+        if (beforeId) opts.before = beforeId;
+
         let fetched;
         try {
-            fetched = await channel.messages.fetch({ limit: toFetch });
+            fetched = await channel.messages.fetch(opts);
         } catch (_) {
             break;
         }
         if (!fetched.size) break;
 
-        const toDelete = checkFn
-            ? fetched.filter(checkFn)
-            : fetched;
+        // نحرّك المؤشر لأقدم رسالة في الدفعة بغض النظر عن الفلترة
+        const oldest = fetched.reduce((a, b) => (a.createdTimestamp < b.createdTimestamp ? a : b));
+        beforeId = oldest.id;
 
-        if (!toDelete.size) break;
+        // تطبيق الفلترة إن وجدت
+        const toDelete = checkFn ? fetched.filter(checkFn) : fetched;
+        if (!toDelete.size) {
+            remaining -= toFetch;
+            if (fetched.size < toFetch) break;
+            continue;
+        }
 
-        // discord.js bulkDelete يعمل فقط على رسائل أحدث من 14 يوم
-        const recent = toDelete.filter(m =>
-            Date.now() - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000,
-        );
-
-        try {
-            if (recent.size > 1) {
-                const deleted = await channel.bulkDelete(recent, true);
-                totalDeleted += deleted.size;
-            } else if (recent.size === 1) {
-                await recent.first().delete();
-                totalDeleted += 1;
+        if (isUserToken) {
+            // الحساب الحقيقي: حذف فردي لكل رسالة
+            for (const msg of toDelete.values()) {
+                try {
+                    await safeApiCall(() => msg.delete());
+                    totalDeleted++;
+                    if (deleteDelay) await new Promise(r => setTimeout(r, deleteDelay));
+                } catch (e) {
+                    if (e.httpStatus === 429 || e.status === 429) {
+                        const retryAfter = (e.retryAfter || 2) * 1000;
+                        await new Promise(r => setTimeout(r, retryAfter));
+                        try { await msg.delete(); totalDeleted++; } catch (_) {}
+                    }
+                    // إذا كانت الرسالة قديمة جداً أو لا يمكن حذفها، نستمر
+                }
             }
-        } catch (e) {
-            if (e.status === 429 || (e.httpStatus === 429)) {
-                const retryAfter = (e.retryAfter || 2) * 1000;
-                await new Promise(r => setTimeout(r, retryAfter));
-                // إعادة المحاولة
+        } else {
+            // البوت: فصل الرسائل الحديثة (أقل من 14 يوم) والقديمة
+            const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
+            const recent = toDelete.filter(m => m.createdTimestamp > cutoff);
+            const old    = toDelete.filter(m => m.createdTimestamp <= cutoff);
+
+            // حذف الحديثة بـ bulkDelete
+            if (recent.size > 0) {
                 try {
                     if (recent.size > 1) {
-                        const deleted = await channel.bulkDelete(recent, true);
-                        totalDeleted += deleted.size;
-                    } else if (recent.size === 1) {
-                        await recent.first().delete();
+                        const deletedMessages = await safeApiCall(() => channel.bulkDelete(recent, true));
+                        totalDeleted += deletedMessages.size;
+                    } else {
+                        await safeApiCall(() => recent.first().delete());
                         totalDeleted += 1;
                     }
-                } catch (_) {}
+                } catch (e) {
+                    // إذا فشل bulkDelete (مثلاً صلاحية ناقصة) نحاول فردي
+                    for (const msg of recent.values()) {
+                        try { await msg.delete(); totalDeleted++; } catch (_) {}
+                    }
+                }
             }
-            break;
+
+            // حذف القديمة واحدة واحدة
+            for (const msg of old.values()) {
+                try {
+                    await safeApiCall(() => msg.delete());
+                    totalDeleted++;
+                } catch (e) {
+                    if (e.httpStatus === 429 || e.status === 429) {
+                        const retryAfter = (e.retryAfter || 1) * 1000;
+                        await new Promise(r => setTimeout(r, retryAfter));
+                        try { await msg.delete(); totalDeleted++; } catch (_) {}
+                    }
+                }
+                if (!isUserToken) await new Promise(r => setTimeout(r, 300)); // تجنب الضغط على API
+            }
         }
 
         remaining -= toFetch;
-        if (fetched.size < toFetch) break; // انتهت الرسائل
+        if (fetched.size < toFetch) break; // انتهت الرسائل في القناة
     }
+
     return totalDeleted;
 }
 
+// ══════════════════════════════════════════════════════════════
+//  clone_server helpers
+// ══════════════════════════════════════════════════════════════
 
 function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
     const overwrites = [];
     for (const [, ow] of channel.permissionOverwrites.cache) {
         let id = ow.id;
+        // إذا كانت الكتابة تشير إلى رتبة أو مستخدم
         if (ow.type === 0 || channel.guild.roles.cache.has(ow.id)) {
-            if (ow.id === channel.guild.id) id = targetGuild.id;
-            else id = roleMap.get(ow.id)?.id || ow.id;
+            if (ow.id === channel.guild.id) {
+                id = targetGuild.id; // @everyone
+            } else {
+                const mapped = roleMap.get(ow.id);
+                if (!mapped) continue; // تجاهل الرتب التي فشل إنشاؤها
+                id = mapped.id;
+            }
+        } else {
+            // لكتابات أعضاء محددين – نحتفظ بها كما هي لأنها تعتمد على مستخدمين خارجيين غالباً
         }
         overwrites.push({ id, allow: ow.allow.bitfield, deny: ow.deny.bitfield, type: ow.type });
     }
@@ -122,6 +203,7 @@ function channelTypeForClone(ch, client) {
  * @returns {Promise<object>}
  */
 async function executeAction(guild, channel, action, params, client) {
+    const tokenType = client.__agentTokenType || 'bot'; // 'user' أو 'bot'
     try {
         // ── دعم target_guild ──
         if (params.target_guild) {
@@ -137,14 +219,14 @@ async function executeAction(guild, channel, action, params, client) {
         //  قنوات
         // ────────────────────────────────
         if (a === 'create_category') {
-            const cat = await guild.channels.create({ name: params.name, type: channelCreateType('category', client.__agentTokenType) });
+            const cat = await guild.channels.create({ name: params.name, type: channelCreateType('category', tokenType) });
             return _ok(`✅ تم إنشاء الكاتيكوري **${cat.name}** في **${guild.name}**`);
         }
 
         if (a === 'create_channel') {
             const catObj = params.category ? findCategory(guild, String(params.category)) : null;
             const type   = (params.type || 'text').toLowerCase();
-            const chType = channelCreateType(type === 'voice' ? 'voice' : 'text', client.__agentTokenType);
+            const chType = channelCreateType(type === 'voice' ? 'voice' : 'text', tokenType);
             const ch     = await guild.channels.create({
                 name  : params.name,
                 type  : chType,
@@ -207,7 +289,7 @@ async function executeAction(guild, channel, action, params, client) {
                 checkFn = (msg) => msg.id < beforeId;
             }
 
-            const deleted = await _safePurge(targetCh, Math.min(limit, 500), checkFn);
+            const deleted = await _safePurge(targetCh, Math.min(limit, 500), checkFn, tokenType);
             return _ok(`✅ تم حذف **${deleted}** رسالة من **#${targetCh.name}**`);
         }
 
@@ -254,7 +336,7 @@ async function executeAction(guild, channel, action, params, client) {
 
             const limit   = Number(params.limit || 100);
             const checkFn = (msg) => msg.author.id === String(memberId);
-            const deleted  = await _safePurge(targetCh, Math.min(limit, 500), checkFn);
+            const deleted  = await _safePurge(targetCh, Math.min(limit, 500), checkFn, tokenType);
             const displayName = member?.displayName || `ID:${memberId}`;
             return _ok(`✅ تم حذف **${deleted}** رسالة للعضو **${displayName}**`);
         }
@@ -273,7 +355,7 @@ async function executeAction(guild, channel, action, params, client) {
                 if (!isTextChannel(ch)) continue;
                 scannedChannels++;
                 try {
-                    totalDeleted += await _safePurge(ch, perChannelLimit, msg => msg.author?.id === String(memberId));
+                    totalDeleted += await _safePurge(ch, perChannelLimit, msg => msg.author?.id === String(memberId), tokenType);
                     await new Promise(r => setTimeout(r, 750));
                 } catch (e) {
                     failures.push(`${ch.name}: ${e.message}`);
@@ -288,7 +370,6 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'create_role') {
             let color;
             try {
-                // discord.js v14 يقبل hex string مباشرة
                 color = params.color ? parseInt(String(params.color).replace('#', ''), 16) : 0;
             } catch (_) {
                 color = 0;
@@ -638,7 +719,6 @@ async function executeAction(guild, channel, action, params, client) {
                 return _err('❌ يجب أن تكون perms عبارة عن كائن JSON {permission: true/false/null}.');
             }
 
-            // بناء الـ overwrites: true=سماح، false=منع، null=إزالة
             const owKwargs = {};
             for (const [key, val] of Object.entries(permMap)) {
                 owKwargs[key] = val === null ? null : Boolean(val);
@@ -664,7 +744,7 @@ async function executeAction(guild, channel, action, params, client) {
             const thread = await targetCh.threads.create({
                 name                : params.name,
                 autoArchiveDuration : Number(params.auto_archive_duration || 1440),
-                type                : channelCreateType('thread', client.__agentTokenType),
+                type                : channelCreateType('thread', tokenType),
             });
             return _ok(`✅ تم إنشاء الثريد **${thread.name}** في **#${targetCh.name}**`, { thread_id: thread.id });
         }
@@ -772,7 +852,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'create_announcement') {
             const name = params.name || 'announcements';
-            const ch   = await guild.channels.create({ name, type: channelCreateType('text', client.__agentTokenType) });
+            const ch   = await guild.channels.create({ name, type: channelCreateType('text', tokenType) });
             await ch.setTopic(params.topic || 'قناة إعلانات السيرفر');
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
@@ -792,7 +872,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         // ────────────────────────────────
-        //  clone_server
+        //  clone_server (مُصلح بالكامل)
         // ────────────────────────────────
         if (a === 'clone_server') {
             let sourceGuild = guild;
@@ -813,10 +893,10 @@ async function executeAction(guild, channel, action, params, client) {
 
             let createdRoles = 0, createdCategories = 0, createdChannels = 0;
             const errors     = [];
-            const roleMap    = new Map();
+            const roleMap    = new Map(); // sourceRoleId -> newRole
             const catMap     = new Map();
 
-            // نسخ الرتب
+            // 1. نسخ الرتب (بدون محاولة ترتيب فوري)
             const sortedRoles = [...sourceGuild.roles.cache.values()]
                 .filter(r => r.name !== '@everyone')
                 .sort((a, b) => b.position - a.position);
@@ -830,7 +910,6 @@ async function executeAction(guild, channel, action, params, client) {
                         mentionable: r.mentionable,
                         reason     : `Clone role from ${sourceGuild.name}`,
                     });
-                    await newRole.setPosition(Math.min(r.position, target.roles.cache.size - 1)).catch(() => {});
                     roleMap.set(r.id, newRole);
                     createdRoles++;
                 } catch (e) {
@@ -838,13 +917,43 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // نسخ الكاتيجوريات
+            // 2. ترتيب الرتب دفعة واحدة بعد الإنشاء
+            if (roleMap.size > 0) {
+                try {
+                    const botMember = await target.members.fetchMe();
+                    const myTop = botMember.roles.highest.position;
+                    const positions = [];
+                    // نبني قائمة بالرتب الجديدة مرتبة تنازلياً حسب position الأصلي
+                    const orderedNew = sortedRoles
+                        .map(r => roleMap.get(r.id))
+                        .filter(Boolean);
+                    // نعطي كل رتبة موقع تحت أعلى رتبة للبوت مباشرة، مع الحفاظ على الترتيب النسبي
+                    let pos = Math.max(1, myTop - 1);
+                    for (const role of orderedNew) {
+                        if (pos < 1) break;
+                        positions.push({ role: role, position: pos });
+                        pos--;
+                    }
+                    if (positions.length) {
+                        await target.roles.setPositions(positions);
+                    }
+                } catch (e) {
+                    errors.push(`ترتيب الرتب: ${e.message}`);
+                }
+            }
+
+            // 3. نسخ الكاتيجوريات
             const sortedCats = [...sourceGuild.channels.cache.values()]
                 .filter(c => isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
             for (const cat of sortedCats) {
                 try {
-                    const newCat = await target.channels.create({ name: cat.name, type: channelTypeForClone(cat, client), permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap), position: cat.position });
+                    const newCat = await target.channels.create({
+                        name: cat.name,
+                        type: channelTypeForClone(cat, client),
+                        permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
+                        position: cat.position,
+                    });
                     catMap.set(cat.id, newCat);
                     createdCategories++;
                 } catch (e) {
@@ -852,35 +961,33 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // نسخ القنوات
+            // 4. نسخ القنوات (نصية وصوتية)
             const sortedChannels = [...sourceGuild.channels.cache.values()]
                 .filter(c => !isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
             for (const ch of sortedChannels) {
                 try {
                     const targetCat = ch.parentId ? catMap.get(ch.parentId) || null : null;
+                    const commonOpts = {
+                        name: ch.name,
+                        type: channelTypeForClone(ch, client),
+                        parent: targetCat,
+                        permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
+                        position: ch.position,
+                    };
                     if (isTextChannel(ch)) {
-                        await target.channels.create({
-                            name           : ch.name,
-                            type           : channelTypeForClone(ch, client),
-                            parent         : targetCat,
-                            topic          : ch.topic || null,
-                            nsfw           : ch.nsfw,
+                        Object.assign(commonOpts, {
+                            topic: ch.topic || null,
+                            nsfw: ch.nsfw,
                             rateLimitPerUser: ch.rateLimitPerUser,
-                            permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
-                            position       : ch.position,
                         });
                     } else if (isVoiceChannel(ch)) {
-                        await target.channels.create({
-                            name     : ch.name,
-                            type     : channelTypeForClone(ch, client),
-                            parent   : targetCat,
-                            bitrate  : Math.min(ch.bitrate || 64000, target.maximumBitrate || 96000),
+                        Object.assign(commonOpts, {
+                            bitrate: Math.min(ch.bitrate || 64000, target.maximumBitrate || 96000),
                             userLimit: ch.userLimit,
-                            permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
-                            position : ch.position,
                         });
                     }
+                    await target.channels.create(commonOpts);
                     createdChannels++;
                 } catch (e) {
                     errors.push(`روم ${ch.name}: ${e.message}`);
@@ -889,7 +996,7 @@ async function executeAction(guild, channel, action, params, client) {
 
             let summary = (
                 `✅ تم استنساخ **${sourceGuild.name}** → **${target.name}**\n` +
-                `الرتب: ${createdRoles} | الكاتيكوريات: ${createdCategories} | الرومات: ${createdChannels} | الصلاحيات والترتيب: مفعلة`
+                `الرتب: ${createdRoles} | الكاتيكوريات: ${createdCategories} | الرومات: ${createdChannels} | الترتيب: محفوظ`
             );
             if (errors.length) {
                 summary += `\n⚠️ بعض العناصر فشلت (${errors.length}): ` + errors.slice(0, 5).join('، ');
@@ -999,5 +1106,6 @@ async function executeAction(guild, channel, action, params, client) {
 // ══════════════════════════════════════════════════════════════
 module.exports = {
     _safePurge,
+    safeApiCall,
     executeAction,
 };
