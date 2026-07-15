@@ -8,7 +8,7 @@
 'use strict';
 
 const axios = require('axios');
-const { ChannelType, PermissionsBitField } = require('discord.js');
+const { ChannelType, PermissionsBitField, AttachmentBuilder } = require('discord.js');
 const { isTextChannel, isVoiceChannel, isCategoryChannel, channelCreateType, isUserRuntime } = require('../discordAdapter');
 
 const {
@@ -207,10 +207,35 @@ function requireOneParam(params, actionName, ...keys) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  MEDIA HELPERS — جلب الصور وإرسالها
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * يجلب صورة من رابط ويجهزها للإرسال كـ AttachmentBuilder
+ * @param {string} url - رابط الصورة
+ * @param {string} fallbackName - اسم الملف الاحتياطي
+ * @returns {Promise<import('discord.js').AttachmentBuilder|null>}
+ */
+async function _fetchAsAttachment(url, fallbackName = 'image.png') {
+    try {
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            timeout: 10000,
+        });
+        return new AttachmentBuilder(Buffer.from(response.data), { name: fallbackName });
+    } catch (_) {
+        return null;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
 //  EXECUTE ACTION — الأداة الرئيسية للتنفيذ
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
+    // ── إرجاع مرفقات الصور إلى agent.js ─ـ
+    let _attachmentsToSend = [];
+    
     if (params && typeof params === 'object' && !params.name && !params.channel && !params.member && !params.role) {
         for (const key of Object.keys(params)) {
             if (params[key] && typeof params[key] === 'object' && !Array.isArray(params[key])) {
@@ -234,7 +259,49 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ── قنوات ─ـ
+        // ── أدوات الصور والوسائط الجديدة ─ـ
+        if (a === 'get_server_icon') {
+            const guildId = getParam(params, 'guild', 'guild_id') || guild.id;
+            const targetGuild = client.guilds.cache.get(String(guildId)) || guild;
+            const iconURL = targetGuild.iconURL({ size: 4096, format: 'png' });
+            if (!iconURL) return _err('❌ هذا السيرفر لا يملك أيقونة.');
+            const attachment = await _fetchAsAttachment(iconURL, `icon_${targetGuild.id}.png`);
+            if (!attachment) return _err('❌ فشل جلب الأيقونة.');
+            _attachmentsToSend.push(attachment);
+            return _ok(`✅ أيقونة سيرفر **${targetGuild.name}**`, { attachments: true });
+        }
+
+        if (a === 'get_server_banner') {
+            const guildId = getParam(params, 'guild', 'guild_id') || guild.id;
+            const targetGuild = client.guilds.cache.get(String(guildId)) || guild;
+            const bannerURL = targetGuild.bannerURL({ size: 4096, format: 'png' });
+            if (!bannerURL) return _err('❌ هذا السيرفر لا يملك بانر.');
+            const attachment = await _fetchAsAttachment(bannerURL, `banner_${targetGuild.id}.png`);
+            if (!attachment) return _err('❌ فشل جلب البانر.');
+            _attachmentsToSend.push(attachment);
+            return _ok(`✅ بانر سيرفر **${targetGuild.name}**`, { attachments: true });
+        }
+
+        if (a === 'send_image') {
+            const url = getParam(params, 'url', 'image_url', 'link');
+            if (!url) return _err('❌ يلزم تحديد "url" لإرسال الصورة.');
+            const chVal = getParam(params, 'channel', 'channel_name');
+            let targetCh = channel;
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
+                if (found && isTextChannel(found)) targetCh = found;
+            }
+            if (!targetCh || !isTextChannel(targetCh)) {
+                return _err('❌ حدد قناة نصية صحيحة.');
+            }
+            const content = String(getParam(params, 'content', 'caption', 'text') || '').trim();
+            const attachment = await _fetchAsAttachment(String(url), 'image.png');
+            if (!attachment) return _err('❌ فشل جلب الصورة من الرابط.');
+            await targetCh.send({ content: content.slice(0, 2000) || undefined, files: [attachment] });
+            return _ok(`✅ تم إرسال الصورة إلى **#${targetCh.name}**`);
+        }
+
+        // ─ـ قنوات ─ـ
         if (a === 'create_category') {
             const nameVal = getParam(params, 'name', 'category_name', 'cat_name');
             if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء كاتيكوري.');
@@ -392,7 +459,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${totalDeleted}** رسالة للعضو من **${scannedChannels}** قناة ممكنة.`, { deleted: totalDeleted, channels: scannedChannels, failures: failures.slice(0, 5) });
         }
 
-        // ── رتب ─ـ
+        // ─ـ رتب ─ـ
         if (a === 'create_role') {
             const nameVal = getParam(params, 'name', 'role_name');
             if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء رتبة.');
@@ -533,7 +600,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🤖 تم إعطاء رتبة **${role.name}** إلى **${count}** بوت`);
         }
 
-        // ── أعضاء ─ـ
+        // ─ـ أعضاء ─ـ
         if (a === 'kick_member') {
             const err = requireOneParam(params, 'kick_member', 'member', 'user', 'member_id');
             if (err) return err;
@@ -648,7 +715,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📤 تم فصل **${member.displayName}** من الفويس`);
         }
 
-        // ── رسائل ومنشن ─ـ
+        // ─ـ رسائل ومنشن ─ـ
         if (a === 'send_message') {
             const chVal = getParam(params, 'channel', 'channel_name', 'name');
             let targetCh = channel;
