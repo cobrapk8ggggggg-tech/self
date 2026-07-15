@@ -20,12 +20,6 @@ const {
 //  SAFE API CALL — غلاف لمكالمات Discord API مع معالجة 429
 // ══════════════════════════════════════════════════════════════
 
-/**
- * ينفذ استدعاء API مع إعادة محاولة ذكية عند 429
- * @param {Function} apiCall - دالة غير متزامنة تنفذ طلب API
- * @param {number} [maxRetries=3] - الحد الأقصى للمحاولات
- * @returns {Promise<any>}
- */
 async function safeApiCall(apiCall, maxRetries = 3) {
     let attempt = 0;
     while (attempt < maxRetries) {
@@ -170,10 +164,62 @@ function channelTypeForClone(ch, client) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  PARAM HELPER — استخراج المعاملات بمرونة
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * يستخرج قيمة معامل من كائن params بمرونة — يجرّب أسماء متعددة.
+ * @param {object} params - كائن المعاملات
+ * @param  {...string} keys - الأسماء المحتملة للمعامل (الأولوية للأول)
+ * @returns {any} قيمة المعامل أو undefined إن لم يوجد
+ */
+function getParam(params, ...keys) {
+    if (!params || typeof params !== 'object') return undefined;
+    for (const k of keys) {
+        if (k in params && params[k] !== undefined && params[k] !== null) {
+            return params[k];
+        }
+    }
+    return undefined;
+}
+
+/**
+ * يتحقق من وجود أحد المفاتيح المطلوبة في params.
+ * إن لم يوجد أي منها، يرجع رسالة خطأ.
+ * @param {object} params
+ * @param {string} actionName
+ * @param  {...string} keys
+ * @returns {{ ok: false, msg: string }|null} يرجع خطأ إن لم يوجد أي مفتاح، وإلا null
+ */
+function requireOneParam(params, actionName, ...keys) {
+    const val = getParam(params, ...keys);
+    if (val === undefined) {
+        const keyList = keys.map(k => `"${k}"`).join(' أو ');
+        return _err(`❌ يلزم تحديد ${keyList} لتنفيذ **${actionName}**.`);
+    }
+    return null;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  EXECUTE ACTION — الأداة الرئيسية للتنفيذ
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
+    // ── معالجة params المغلفة (عندما يرسل AI كائن params داخل params) ──
+    if (params && typeof params === 'object' && !params.name && !params.channel && !params.member && !params.role) {
+        // ابحث عن أي مفتاح قيمته كائن (قد يكون params الحقيقي)
+        for (const key of Object.keys(params)) {
+            if (params[key] && typeof params[key] === 'object' && !Array.isArray(params[key])) {
+                const nested = params[key];
+                // إذا كان الكائن الداخلي يحتوي على مفاتيح معروفة، استخدمه
+                if (nested.name || nested.channel || nested.member || nested.role || nested.content || nested.new_name) {
+                    params = nested;
+                    break;
+                }
+            }
+        }
+    }
+
     const tokenType = client.__agentTokenType || 'bot';
     try {
         if (params.target_guild) {
@@ -187,16 +233,22 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ── قنوات ──
         if (a === 'create_category') {
-            const cat = await guild.channels.create({ name: params.name, type: channelCreateType('category', tokenType) });
+            const nameVal = getParam(params, 'name', 'category_name', 'cat_name');
+            if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء كاتيكوري.');
+            const cat = await guild.channels.create({ name: String(nameVal), type: channelCreateType('category', tokenType) });
             return _ok(`✅ تم إنشاء الكاتيكوري **${cat.name}** في **${guild.name}**`);
         }
 
         if (a === 'create_channel') {
-            const catObj = params.category ? await findCategory(guild, String(params.category)) : null;
-            const type   = (params.type || 'text').toLowerCase();
+            const nameVal = getParam(params, 'name', 'channel_name', 'ch_name');
+            if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء روم.');
+            const catVal = getParam(params, 'category', 'parent', 'cat');
+            const catObj = catVal ? await findCategory(guild, String(catVal)) : null;
+            const typeVal = getParam(params, 'type', 'channel_type') || 'text';
+            const type   = String(typeVal).toLowerCase();
             const chType = channelCreateType(type === 'voice' ? 'voice' : 'text', tokenType);
             const ch     = await guild.channels.create({
-                name  : params.name,
+                name  : String(nameVal),
                 type  : chType,
                 parent: catObj || null,
             });
@@ -205,25 +257,34 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_channel') {
-            const ch = await findChannel(guild, String(params.name));
-            if (!ch) return _err(`❌ ما لقيت روم: **${params.name}**`);
+            const err = requireOneParam(params, 'delete_channel', 'name', 'channel', 'channel_name');
+            if (err) return err;
+            const chVal = getParam(params, 'name', 'channel', 'channel_name');
+            const ch = await findChannel(guild, String(chVal));
+            if (!ch) return _err(`❌ ما لقيت روم: **${chVal}**`);
             const name = ch.name;
             await ch.delete();
             return _ok(`✅ تم حذف الروم **${name}**`);
         }
 
         if (a === 'rename_channel') {
-            const ch = await findChannel(guild, String(params.channel));
-            if (!ch) return _err(`❌ ما لقيت روم: **${params.channel}**`);
+            const err = requireOneParam(params, 'rename_channel', 'channel', 'name', 'channel_name');
+            if (err) return err;
+            const chVal = getParam(params, 'channel', 'name', 'channel_name');
+            const newName = getParam(params, 'new_name', 'newName', 'name_to');
+            if (!newName) return _err('❌ يلزم تحديد "new_name" لتغيير اسم الروم.');
+            const ch = await findChannel(guild, String(chVal));
+            if (!ch) return _err(`❌ ما لقيت روم: **${chVal}**`);
             const old = ch.name;
-            await ch.edit({ name: params.new_name });
-            return _ok(`✅ تم تغيير اسم **${old}** → **${params.new_name}**`);
+            await ch.edit({ name: String(newName) });
+            return _ok(`✅ تم تغيير اسم **${old}** → **${newName}**`);
         }
 
         if (a === 'clear_channel') {
+            const chVal = getParam(params, 'channel', 'name', 'channel_name');
             let targetCh = null;
-            if (params.channel) {
-                const chQ  = String(params.channel);
+            if (chVal) {
+                const chQ  = String(chVal);
                 const found = await findChannel(guild, chQ);
                 if (found && isTextChannel(found)) {
                     targetCh = found;
@@ -243,7 +304,7 @@ async function executeAction(guild, channel, action, params, client) {
                 return _err('❌ حدد قناة نصية صحيحة (channel).');
             }
 
-            const limit = Number(params.limit || 100);
+            const limit = Number(getParam(params, 'limit', 'count') || 100);
             let checkFn = null;
             if (params.before) {
                 let beforeId;
@@ -260,7 +321,8 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_member_messages') {
-            const memberQ = String(params.member || '');
+            const memberVal = getParam(params, 'member', 'user', 'member_id', 'user_id');
+            const memberQ = String(memberVal || '');
             let member    = await findMember(guild, memberQ, client);
             let memberId  = null;
 
@@ -276,9 +338,10 @@ async function executeAction(guild, channel, action, params, client) {
                 memberId = member.id;
             }
 
+            const chVal = getParam(params, 'channel', 'name', 'channel_name');
             let targetCh = null;
-            if (params.channel) {
-                const chQ  = String(params.channel);
+            if (chVal) {
+                const chQ  = String(chVal);
                 const found = await findChannel(guild, chQ);
                 if (found && isTextChannel(found)) {
                     targetCh = found;
@@ -296,7 +359,7 @@ async function executeAction(guild, channel, action, params, client) {
 
             if (!targetCh) return _err('❌ حدد القناة (channel) صراحة.');
 
-            const limit   = Number(params.limit || 100);
+            const limit   = Number(getParam(params, 'limit', 'count') || 100);
             const checkFn = (msg) => msg.author.id === String(memberId);
             const deleted  = await _safePurge(targetCh, Math.min(limit, 500), checkFn, tokenType);
             const displayName = member?.displayName || `ID:${memberId}`;
@@ -304,11 +367,12 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_member_messages_all_channels') {
-            const memberQ = String(params.member || '').trim();
+            const memberVal = getParam(params, 'member', 'user', 'member_id', 'user_id');
+            const memberQ = String(memberVal || '').trim();
             if (!memberQ) return _err('❌ حدد العضو (member).');
             const member = await findMember(guild, memberQ, client).catch(() => null);
             const memberId = member?.id || memberQ;
-            const perChannelLimit = Math.min(Number(params.limit_per_channel || 100), 500);
+            const perChannelLimit = Math.min(Number(getParam(params, 'limit_per_channel', 'limit') || 100), 500);
             let totalDeleted = 0;
             let scannedChannels = 0;
             const failures = [];
@@ -327,44 +391,56 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ── رتب ──
         if (a === 'create_role') {
+            const nameVal = getParam(params, 'name', 'role_name');
+            if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء رتبة.');
             let color;
             try {
-                color = params.color ? parseInt(String(params.color).replace('#', ''), 16) : 0;
+                color = getParam(params, 'color', 'colour') ? parseInt(String(getParam(params, 'color', 'colour')).replace('#', ''), 16) : 0;
             } catch (_) {
                 color = 0;
             }
             const role = await guild.roles.create({
-                name       : params.name,
+                name       : String(nameVal),
                 color      : color,
-                permissions: params.perms
-                    ? new PermissionsBitField(Object.entries(params.perms).filter(([, v]) => v).map(([k]) => k))
+                permissions: getParam(params, 'perms', 'permissions')
+                    ? new PermissionsBitField(Object.entries(getParam(params, 'perms', 'permissions')).filter(([, v]) => v).map(([k]) => k))
                     : 0n,
             });
-            if (params.position && Number(params.position) > 0) {
+            const posVal = getParam(params, 'position', 'pos');
+            if (posVal && Number(posVal) > 0) {
                 try {
-                    await guild.roles.setPosition(role, Number(params.position));
+                    await guild.roles.setPosition(role, Number(posVal));
                 } catch (_) {}
             }
             return _ok(`✅ تم إنشاء الرتبة **${role.name}** في **${guild.name}**`);
         }
 
         if (a === 'delete_role') {
-            const role = await findRole(guild, String(params.name));
-            if (!role) return _err(`❌ ما لقيت رتبة: **${params.name}**`);
+            const err = requireOneParam(params, 'delete_role', 'name', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'name', 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت رتبة: **${roleVal}**`);
             const name = role.name;
             await role.delete();
             return _ok(`✅ تم حذف الرتبة **${name}**`);
         }
 
         if (a === 'edit_role') {
-            const role = await findRole(guild, String(params.name));
-            if (!role) return _err(`❌ ما لقيت رتبة: **${params.name}**`);
+            const err = requireOneParam(params, 'edit_role', 'name', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'name', 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت رتبة: **${roleVal}**`);
             const kw = {};
-            if (params.new_name) kw.name  = params.new_name;
-            if (params.color)    kw.color = parseInt(String(params.color).replace('#', ''), 16);
-            if (params.perms) {
+            const newName = getParam(params, 'new_name', 'newName');
+            if (newName) kw.name  = String(newName);
+            const colorVal = getParam(params, 'color', 'colour');
+            if (colorVal)    kw.color = parseInt(String(colorVal).replace('#', ''), 16);
+            const permsVal = getParam(params, 'perms', 'permissions');
+            if (permsVal) {
                 kw.permissions = new PermissionsBitField(
-                    Object.entries(params.perms).filter(([, v]) => v).map(([k]) => k),
+                    Object.entries(permsVal).filter(([, v]) => v).map(([k]) => k),
                 );
             }
             await role.edit(kw);
@@ -372,53 +448,78 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'grant_role') {
-            const member = await findMember(guild, String(params.member), client);
-            const role   = await findRole(guild, String(params.role));
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            if (!role)   return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
+            const errM = requireOneParam(params, 'grant_role', 'member', 'user', 'member_id');
+            if (errM) return errM;
+            const errR = requireOneParam(params, 'grant_role', 'role', 'role_name');
+            if (errR) return errR;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const roleVal   = getParam(params, 'role', 'role_name');
+            const member = await findMember(guild, String(memberVal), client);
+            const role   = await findRole(guild, String(roleVal));
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            if (!role)   return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
             await member.roles.add(role);
             return _ok(`✅ أعطيت **${member.displayName}** رتبة **${role.name}**`);
         }
 
         if (a === 'revoke_role') {
-            const member = await findMember(guild, String(params.member), client);
-            const role   = await findRole(guild, String(params.role));
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            if (!role)   return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
+            const errM = requireOneParam(params, 'revoke_role', 'member', 'user', 'member_id');
+            if (errM) return errM;
+            const errR = requireOneParam(params, 'revoke_role', 'role', 'role_name');
+            if (errR) return errR;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const roleVal   = getParam(params, 'role', 'role_name');
+            const member = await findMember(guild, String(memberVal), client);
+            const role   = await findRole(guild, String(roleVal));
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            if (!role)   return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
             await member.roles.remove(role);
             return _ok(`✅ سحبت رتبة **${role.name}** من **${member.displayName}**`);
         }
 
         if (a === 'set_role_color') {
-            const role = await findRole(guild, String(params.role));
-            if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
-            const colorInt = parseInt(String(params.color || '#99AAB5').replace('#', ''), 16);
+            const err = requireOneParam(params, 'set_role_color', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
+            const colorVal = getParam(params, 'color', 'colour') || '#99AAB5';
+            const colorInt = parseInt(String(colorVal).replace('#', ''), 16);
             await role.edit({ color: colorInt });
             return _ok(`🎨 تم تغيير لون رتبة **${role.name}**`);
         }
 
         if (a === 'set_role_mentionable') {
-            const role = await findRole(guild, String(params.role));
-            if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
-            const mentionable = Boolean(params.mentionable !== false);
+            const err = requireOneParam(params, 'set_role_mentionable', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
+            const mentionable = Boolean(getParam(params, 'mentionable', 'mention') !== false);
             await role.edit({ mentionable });
             return _ok(`✅ رتبة **${role.name}** ${mentionable ? 'قابلة للمنشن' : 'غير قابلة للمنشن'}`);
         }
 
         if (a === 'remove_role_from_all') {
-            const role = await findRole(guild, String(params.role));
-            if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
+            const err = requireOneParam(params, 'remove_role_from_all', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
             let count = 0;
             for (const mem of role.members.values()) {
-                await mem.roles.remove(role, params.reason || 'Remove role from all');
+                await mem.roles.remove(role, getParam(params, 'reason') || 'Remove role from all');
                 count++;
             }
             return _ok(`✅ تم سحب رتبة **${role.name}** من **${count}** عضو`);
         }
 
         if (a === 'add_role_to_bots') {
-            const role = await findRole(guild, String(params.role));
-            if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
+            const err = requireOneParam(params, 'add_role_to_bots', 'role', 'role_name');
+            if (err) return err;
+            const roleVal = getParam(params, 'role', 'role_name');
+            const role = await findRole(guild, String(roleVal));
+            if (!role) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
             let count = 0;
             for (const mem of guild.members.cache.values()) {
                 if (mem.user.bot && !mem.roles.cache.has(role.id)) {
@@ -431,103 +532,139 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ── أعضاء ──
         if (a === 'kick_member') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
+            const err = requireOneParam(params, 'kick_member', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
             const name = member.displayName;
-            await member.kick(params.reason || '—');
+            await member.kick(getParam(params, 'reason') || '—');
             return _ok(`✅ تم كيك **${name}**`);
         }
 
         if (a === 'ban_member') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
+            const err = requireOneParam(params, 'ban_member', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
             const name = member.displayName;
-            await member.ban({ reason: params.reason || '—', deleteMessageDays: 0 });
+            await member.ban({ reason: getParam(params, 'reason') || '—', deleteMessageDays: 0 });
             return _ok(`✅ تم بان **${name}**`);
         }
 
         if (a === 'unban_member') {
-            const user = await client.users.fetch(String(params.user));
-            await guild.members.unban(user, params.reason || '—');
+            const err = requireOneParam(params, 'unban_member', 'user', 'member', 'user_id');
+            if (err) return err;
+            const userVal = getParam(params, 'user', 'member', 'user_id');
+            const user = await client.users.fetch(String(userVal));
+            await guild.members.unban(user, getParam(params, 'reason') || '—');
             return _ok(`✅ تم فك الحظر عن **${user.username}**`);
         }
 
         if (a === 'timeout_member') {
-            const member  = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            const minutes = Math.max(1, Math.min(Number(params.minutes || 10), 40320));
+            const err = requireOneParam(params, 'timeout_member', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member  = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            const minutes = Math.max(1, Math.min(Number(getParam(params, 'minutes', 'duration') || 10), 40320));
             const until   = new Date(Date.now() + minutes * 60000);
-            await member.timeout(until, params.reason || '—');
+            await member.timeout(until, getParam(params, 'reason') || '—');
             return _ok(`⏳ تم تايم آوت **${member.displayName}** لمدة **${minutes}** دقيقة`);
         }
 
         if (a === 'remove_timeout') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            await member.timeout(null, params.reason || '—');
+            const err = requireOneParam(params, 'remove_timeout', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            await member.timeout(null, getParam(params, 'reason') || '—');
             return _ok(`✅ تم إزالة التايم آوت عن **${member.displayName}**`);
         }
 
         if (a === 'change_nickname') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
+            const err = requireOneParam(params, 'change_nickname', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const newNick = getParam(params, 'nickname', 'nick', 'new_nickname', 'new_name');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
             const old = member.displayName;
-            await member.setNickname(params.nickname || null);
-            return _ok(`✅ تم تغيير نكنيم **${old}** → **${params.nickname || '(مسح)'}**`);
+            await member.setNickname(newNick || null);
+            return _ok(`✅ تم تغيير نكنيم **${old}** → **${newNick || '(مسح)'}**`);
         }
 
         if (a === 'move_member') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            const vc = await findChannel(guild, String(params.channel));
+            const errM = requireOneParam(params, 'move_member', 'member', 'user', 'member_id');
+            if (errM) return errM;
+            const errC = requireOneParam(params, 'move_member', 'channel', 'voice_channel');
+            if (errC) return errC;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const chVal     = getParam(params, 'channel', 'voice_channel');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            const vc = await findChannel(guild, String(chVal));
             if (!vc || !isVoiceChannel(vc)) {
-                return _err(`❌ ما لقيت فويس: **${params.channel}**`);
+                return _err(`❌ ما لقيت فويس: **${chVal}**`);
             }
             await member.voice.setChannel(vc);
             return _ok(`✅ تم نقل **${member.displayName}** إلى **${vc.name}**`);
         }
 
         if (a === 'voice_mute') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            const mute = Boolean(params.mute !== false);
+            const err = requireOneParam(params, 'voice_mute', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            const mute = Boolean(getParam(params, 'mute', 'muted') !== false);
             await member.voice.setMute(mute);
             return _ok(`🔇 تم ${mute ? 'كتم' : 'إلغاء كتم'} **${member.displayName}**`);
         }
 
         if (a === 'voice_deafen') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            const deafen = Boolean(params.deafen !== false);
+            const err = requireOneParam(params, 'voice_deafen', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            const deafen = Boolean(getParam(params, 'deafen', 'deafened') !== false);
             await member.voice.setDeaf(deafen);
             return _ok(`🔕 ${deafen ? 'إسكات السماع' : 'إلغاء إسكات'} **${member.displayName}**`);
         }
 
         if (a === 'disconnect_member') {
-            const member = await findMember(guild, String(params.member), client);
-            if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
+            const err = requireOneParam(params, 'disconnect_member', 'member', 'user', 'member_id');
+            if (err) return err;
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            const member = await findMember(guild, String(memberVal), client);
+            if (!member) return _err(`❌ ما لقيت العضو: **${memberVal}**`);
             await member.voice.disconnect();
             return _ok(`📤 تم فصل **${member.displayName}** من الفويس`);
         }
 
         // ── رسائل ومنشن ──
         if (a === 'send_message') {
+            const chVal = getParam(params, 'channel', 'channel_name', 'name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة (channel).');
             }
-            const content = String(params.content || '').trim();
+            const content = String(getParam(params, 'content', 'message', 'text') || '').trim();
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
             let sent;
-            if (params.reply_to) {
-                const replyId = String(params.reply_to);
+            const replyTo = getParam(params, 'reply_to', 'reply_to_message');
+            if (replyTo) {
+                const replyId = String(replyTo);
                 let ref = await targetCh.messages.fetch(replyId).catch(() => null);
-                if (!ref && params.reply_channel) {
-                    const replyCh = await findChannel(guild, String(params.reply_channel)) || await client.channels.fetch(String(params.reply_channel)).catch(() => null);
+                if (!ref && getParam(params, 'reply_channel')) {
+                    const replyCh = await findChannel(guild, String(getParam(params, 'reply_channel'))) || await client.channels.fetch(String(getParam(params, 'reply_channel'))).catch(() => null);
                     if (replyCh && isTextChannel(replyCh)) {
                         targetCh = replyCh;
                         ref = await replyCh.messages.fetch(replyId).catch(() => null);
@@ -548,19 +685,20 @@ async function executeAction(guild, channel, action, params, client) {
             } else {
                 sent = await targetCh.send(content.slice(0, 2000));
             }
-            return _ok(`✅ تم إرسال الرسالة في **#${targetCh.name}** (${guild.name})`, { message_id: sent.id, replied_to: params.reply_to || null });
+            return _ok(`✅ تم إرسال الرسالة في **#${targetCh.name}** (${guild.name})`, { message_id: sent.id, replied_to: replyTo || null });
         }
 
         if (a === 'mention_everyone') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
-            const extra = String(params.content || '').trim();
+            const extra = String(getParam(params, 'content', 'message', 'text') || '').trim();
             const text  = extra ? `@everyone ${extra}` : '@everyone';
             const { AllowedMentionTypes } = require('discord.js');
             const sent = await targetCh.send({
@@ -571,102 +709,131 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'react_message') {
-            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            const emoji = getParam(params, 'emoji', 'reaction') || '✅';
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" للتفاعل.');
+            let targetCh = chVal ? await findChannel(guild, String(chVal)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
-            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            const msg = await targetCh.messages.fetch(String(msgId)).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
-            await msg.react(String(params.emoji || '✅'));
+            await msg.react(String(emoji));
             return _ok(`✅ تم وضع التفاعل على الرسالة في #${targetCh.name}`);
         }
 
         if (a === 'edit_own_message') {
-            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            const content = getParam(params, 'content', 'message', 'text');
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" لتعديل الرسالة.');
+            let targetCh = chVal ? await findChannel(guild, String(chVal)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
-            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            const msg = await targetCh.messages.fetch(String(msgId)).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
             if (msg.author.id !== client.user.id) return _err('❌ لا أستطيع تعديل رسالة ليست لي.');
-            await msg.edit(String(params.content || '').slice(0, 2000));
+            await msg.edit(String(content || '').slice(0, 2000));
             return _ok(`✅ تم تعديل رسالتي في #${targetCh.name}`);
         }
 
         if (a === 'delete_message') {
-            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" لحذف الرسالة.');
+            let targetCh = chVal ? await findChannel(guild, String(chVal)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
-            const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            const msg = await targetCh.messages.fetch(String(msgId)).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
             await msg.delete();
             return _ok(`🗑️ تم حذف الرسالة من #${targetCh.name}`);
         }
 
         if (a === 'forward_message') {
-            const fromCh = params.from_channel ? await findChannel(guild, String(params.from_channel)) : channel;
-            const toCh = params.to_channel ? await findChannel(guild, String(params.to_channel)) : channel;
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" لتحويل الرسالة.');
+            const fromChVal = getParam(params, 'from_channel', 'source_channel');
+            const toChVal   = getParam(params, 'to_channel', 'target_channel');
+            const fromCh = fromChVal ? await findChannel(guild, String(fromChVal)) : channel;
+            const toCh = toChVal ? await findChannel(guild, String(toChVal)) : channel;
             if (!fromCh || !toCh || !isTextChannel(fromCh) || !isTextChannel(toCh)) return _err('❌ حدد قنوات نصية صحيحة.');
-            const msg = await fromCh.messages.fetch(String(params.message_id || '')).catch(() => null);
+            const msg = await fromCh.messages.fetch(String(msgId)).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة الأصلية.');
             const sent = await msg.forward(toCh).catch(async () => toCh.send({ content: `Forwarded from ${msg.url}\n${String(msg.content || '').slice(0, 1800)}` }));
             return _ok(`📨 تم تحويل الرسالة إلى #${toCh.name}`, { message_id: sent?.id || null });
         }
 
         if (a === 'send_dm') {
-            const userId = String(params.user || params.member || '').trim();
+            const userVal = getParam(params, 'user', 'member', 'user_id', 'member_id');
+            if (!userVal) return _err('❌ يلزم تحديد "user" لإرسال رسالة خاصة.');
+            const userId = String(userVal).trim();
             const user = await client.users.fetch(userId).catch(() => null);
             if (!user) return _err('❌ لم أجد المستخدم لإرسال الخاص.');
-            const sent = await user.send(String(params.content || '').slice(0, 2000));
+            const content = getParam(params, 'content', 'message', 'text');
+            if (!content) return _err('❌ محتوى الرسالة فارغ.');
+            const sent = await user.send(String(content).slice(0, 2000));
             return _ok(`📩 تم إرسال رسالة خاصة إلى ${user.username}`, { message_id: sent.id });
         }
 
         if (a === 'pin_message') {
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" لتثبيت الرسالة.');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
-            const msg = await targetCh.messages.fetch(String(params.message_id));
+            const msg = await targetCh.messages.fetch(String(msgId));
             await msg.pin();
             return _ok(`📌 تم تثبيت الرسالة في **#${targetCh.name}**`);
         }
 
         if (a === 'unpin_message') {
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const msgId = getParam(params, 'message_id', 'msg_id');
+            if (!msgId) return _err('❌ يلزم تحديد "message_id" لإلغاء التثبيت.');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
-            const msg = await targetCh.messages.fetch(String(params.message_id));
+            const msg = await targetCh.messages.fetch(String(msgId));
             await msg.unpin();
             return _ok(`📌 تم إلغاء تثبيت الرسالة من **#${targetCh.name}**`);
         }
 
         // ── صلاحيات القنوات ──
         if (a === 'set_channel_permissions') {
-            const chObj = await findChannel(guild, String(params.channel || ''));
-            if (!chObj) return _err(`❌ ما لقيت القناة: **${params.channel}**`);
+            const chVal = getParam(params, 'channel', 'channel_name', 'name');
+            if (!chVal) return _err('❌ يلزم تحديد "channel" لتعديل صلاحيات القناة.');
+            const chObj = await findChannel(guild, String(chVal));
+            if (!chObj) return _err(`❌ ما لقيت القناة: **${chVal}**`);
 
             let target = null;
-            if (params.role) {
-                target = await findRole(guild, String(params.role));
-                if (!target) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
-            } else if (params.member) {
-                target = await findMember(guild, String(params.member), client);
+            const roleVal = getParam(params, 'role', 'role_name');
+            const memberVal = getParam(params, 'member', 'user', 'member_id');
+            if (roleVal) {
+                target = await findRole(guild, String(roleVal));
+                if (!target) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
+            } else if (memberVal) {
+                target = await findMember(guild, String(memberVal), client);
                 if (!target) {
                     try {
-                        target = await guild.members.fetch(String(params.member).trim());
+                        target = await guild.members.fetch(String(memberVal).trim());
                     } catch (_) {
-                        return _err(`❌ ما لقيت العضو: **${params.member}**`);
+                        return _err(`❌ ما لقيت العضو: **${memberVal}**`);
                     }
                 }
             } else {
                 return _err('❌ حدد role أو member لتعديل صلاحيات القناة.');
             }
 
-            const permMap = params.perms || {};
+            const permMap = getParam(params, 'perms', 'permissions') || {};
             if (typeof permMap !== 'object') {
                 return _err('❌ يجب أن تكون perms عبارة عن كائن JSON {permission: true/false/null}.');
             }
@@ -683,41 +850,46 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ── ثريد وإعلانات ──
         if (a === 'create_thread') {
+            const nameVal = getParam(params, 'name', 'thread_name');
+            if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء ثريد.');
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لإنشاء الثريد.');
             }
             const thread = await targetCh.threads.create({
-                name                : params.name,
-                autoArchiveDuration : Number(params.auto_archive_duration || 1440),
+                name                : String(nameVal),
+                autoArchiveDuration : Number(getParam(params, 'auto_archive_duration', 'archive_duration') || 1440),
                 type                : channelCreateType('thread', tokenType),
             });
             return _ok(`✅ تم إنشاء الثريد **${thread.name}** في **#${targetCh.name}**`, { thread_id: thread.id });
         }
 
         if (a === 'slowmode') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة للسلو مود.');
             }
-            const seconds = Number(params.seconds || 0);
+            const seconds = Number(getParam(params, 'seconds', 'duration', 'time') || 0);
             await targetCh.setRateLimitPerUser(seconds);
             if (seconds === 0) return _ok(`✅ تم إيقاف السلو مود في **#${targetCh.name}**`);
             return _ok(`✅ سلو مود **${seconds}** ثانية في **#${targetCh.name}**`);
         }
 
         if (a === 'lock_channel') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -728,9 +900,10 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'unlock_channel') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -741,39 +914,44 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'set_channel_topic') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة.');
             }
-            await targetCh.setTopic(String(params.topic || '').slice(0, 1024));
+            const topic = getParam(params, 'topic', 'description');
+            if (topic === undefined) return _err('❌ يلزم تحديد "topic" لتعديل وصف القناة.');
+            await targetCh.setTopic(String(topic).slice(0, 1024));
             return _ok(`✅ تم تعديل وصف **#${targetCh.name}**`);
         }
 
         if (a === 'create_invite') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && (isTextChannel(found) || isVoiceChannel(found))) {
                     targetCh = found;
                 }
             }
             if (!targetCh) return _err('❌ حدد قناة صحيحة لإنشاء الدعوة.');
             const invite = await targetCh.createInvite({
-                maxAge : Number(params.max_age || 86400),
-                maxUses: Number(params.max_uses || 0),
+                maxAge : Number(getParam(params, 'max_age', 'expires') || 86400),
+                maxUses: Number(getParam(params, 'max_uses', 'uses') || 0),
                 unique : true,
             });
             return _ok(`✅ تم إنشاء دعوة للقناة **${targetCh.name}**: ${invite.url}`, { url: invite.url });
         }
 
         if (a === 'archive_channel') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -785,9 +963,10 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'nuke_channel') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -801,20 +980,21 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'create_announcement') {
-            const name = params.name || 'announcements';
-            const ch   = await guild.channels.create({ name, type: channelCreateType('text', tokenType) });
-            await ch.setTopic(params.topic || 'قناة إعلانات السيرفر');
+            const nameVal = getParam(params, 'name', 'channel_name') || 'announcements';
+            const ch   = await guild.channels.create({ name: String(nameVal), type: channelCreateType('text', tokenType) });
+            await ch.setTopic(getParam(params, 'topic', 'description') || 'قناة إعلانات السيرفر');
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
 
         if (a === 'start_events') {
-            const targetCh = params.channel ? (await findChannel(guild, String(params.channel)) || channel) : channel;
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const targetCh = chVal ? (await findChannel(guild, String(chVal)) || channel) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة فعاليات نصية صحيحة.');
             const { runEventSeries } = require('../accountAgent');
             const result = await runEventSeries(client, guild, targetCh, { agentId: client.__agentId || 'default' }, {
-                gameName: params.game || params.game_name || null,
-                count: Number(params.count || 1),
-                minutes: Number(params.minutes || 0),
+                gameName: getParam(params, 'game', 'game_name') || null,
+                count: Number(getParam(params, 'count', 'number') || 1),
+                minutes: Number(getParam(params, 'minutes', 'duration') || 0),
                 first: true,
             });
             return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
@@ -947,22 +1127,24 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ── Webhook, DM, Poll ──
         if (a === 'create_webhook') {
+            const chVal = getParam(params, 'channel', 'channel_name');
+            const nameVal = getParam(params, 'name', 'webhook_name') || 'Disor Webhook';
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة لإنشاء الويبهوك.');
             }
-            const wh = await targetCh.createWebhook({ name: params.name || 'Disor Webhook' });
+            const wh = await targetCh.createWebhook({ name: String(nameVal) });
             return _ok(`🔗 تم إنشاء ويبهوك **${wh.name}** في **#${targetCh.name}**`, { url: wh.url, id: wh.id });
         }
 
         if (a === 'send_webhook_message') {
-            const whUrl   = String(params.webhook_url || '');
-            const content = String(params.content || '').trim();
-            const whName  = String(params.username || 'Webhook');
+            const whUrl   = String(getParam(params, 'webhook_url', 'url') || '');
+            const content = String(getParam(params, 'content', 'message', 'text') || '').trim();
+            const whName  = String(getParam(params, 'username', 'name') || 'Webhook');
             if (!whUrl)   return _err('❌ يجب تحديد webhook_url.');
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
             const resp = await axios.post(
@@ -977,17 +1159,17 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'mass_dm') {
-            const content     = String(params.content || '').trim();
-            const roleFilter  = params.role;
+            const content = String(getParam(params, 'content', 'message', 'text') || '').trim();
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
-            let members       = [...guild.members.cache.values()];
+            const roleFilter = getParam(params, 'role', 'role_name');
+            let members = [...guild.members.cache.values()];
             if (roleFilter) {
                 const roleObj = await findRole(guild, String(roleFilter));
                 if (!roleObj) return _err(`❌ ما لقيت الرتبة: **${roleFilter}**`);
                 members = [...roleObj.members.values()];
             }
             let sentCount = 0, failedCount = 0;
-            const limit   = Math.min(Number(params.limit || 50), members.length);
+            const limit   = Math.min(Number(getParam(params, 'limit', 'count') || 50), members.length);
             for (const mem of members.slice(0, limit)) {
                 if (mem.user.bot) continue;
                 try {
@@ -1002,16 +1184,17 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'poll') {
+            const chVal = getParam(params, 'channel', 'channel_name');
             let targetCh = channel;
-            if (params.channel) {
-                const found = await findChannel(guild, String(params.channel));
+            if (chVal) {
+                const found = await findChannel(guild, String(chVal));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
                 return _err('❌ حدد قناة نصية صحيحة للتصويت.');
             }
-            const question = String(params.question || 'تصويت').trim();
-            const options  = Array.isArray(params.options) ? params.options : ['✅ نعم', '❌ لا'];
+            const question = String(getParam(params, 'question', 'title') || 'تصويت').trim();
+            const options  = Array.isArray(getParam(params, 'options', 'choices')) ? getParam(params, 'options', 'choices') : ['✅ نعم', '❌ لا'];
             if (options.length < 2) return _err('❌ يجب توفير قائمة خيارات (options) بعنصرين على الأقل.');
 
             const numberEmojis = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
