@@ -182,11 +182,29 @@ ${thinkingNote}
 | nuke_channel | channel, channel_name |
 | create_announcement | name, channel_name, + topic |
 | start_events | channel, + game, game_name, + count, + minutes |
-| clone_server | source_guild, + target_guild |
+| clone_server | source_guild, + target_guild, + include_roles, + include_categories, + include_channels |
 | create_webhook | channel, channel_name, + name, webhook_name |
 | send_webhook_message | webhook_url, url, + content, message, text, + username |
 | mass_dm | role, role_name (اختياري), + content, message, text, + limit |
 | poll | channel, channel_name, + question, title, + options, choices |
+
+══════════════════════════════════════════════
+نسخ السيرفرات بمرونة — clone_server
+══════════════════════════════════════════════
+أداة clone_server تقبل مفاتيح اختيارية لتحديد ما تريد نسخه بالضبط:
+- include_roles: true/false (افتراضياً true) — هل تنسخ الرتب؟
+- include_categories: true/false (افتراضياً true) — هل تنسخ الكاتيجوريات؟
+- include_channels: true/false (افتراضياً true) — هل تنسخ الرومات؟
+
+أمثلة:
+• نسخ كل شيء: {"tool":"execute","action":"clone_server","params":{"source_guild":"مصدر","target_guild":"هدف"}}
+• نسخ الرتب والقنوات فقط بدون كاتيجوريات: {"tool":"execute","action":"clone_server","params":{"source_guild":"مصدر","target_guild":"هدف","include_categories":false}}
+• نسخ القنوات فقط (بدون رتب وبدون كاتيجوريات): {"tool":"execute","action":"clone_server","params":{"source_guild":"مصدر","target_guild":"هدف","include_roles":false,"include_categories":false}}
+• نسخ الرتب فقط: {"tool":"execute","action":"clone_server","params":{"source_guild":"مصدر","target_guild":"هدف","include_channels":false,"include_categories":false}}
+
+إذا قال المستخدم "انسخ السيرفر لكن اترك الرتب" → استخدم include_roles: false
+إذا قال "انسخ القنوات فقط" → استخدم include_roles: false و include_categories: false
+إذا قال "انسخ كل شيء" → لا تحدد أي include، أو اجعلها كلها true
 
 ══════════════════════════════════════════════
 تنسيق Discord — كيف تكتب ردودك
