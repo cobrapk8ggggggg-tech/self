@@ -28,8 +28,7 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     event_wait_ms: 10000,
     first_event_announces_everyone: true,
     games: [
-        { name: 'مافيا', command: '+مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
-        { name: 'الجاسوس', command: '+الجاسوس', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
+        { name: 'مافيا', command: '.مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
         { name: 'روليت', command: '.روليت', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
         { name: 'لغم', command: '.لغم', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
         { name: 'غميضه', command: '.غميضه', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
