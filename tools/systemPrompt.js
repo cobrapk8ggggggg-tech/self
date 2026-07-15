@@ -26,7 +26,6 @@ function buildSystem(botName, mode = 'default', thinking = false, accessLevel = 
         ? '(التفكير العميق مفعّل الآن — تستطيع التفكير بحرية داخلياً قبل الرد. سيُحذف تلقائياً قبل وصول ردك للمستخدم، فلا تشِر إليه ولا تخفِه، فقط استخدمه لتحسين قراراتك.)'
         : '';
 
-    // بناء البرومبت بهوية الوكيل الكاملة
     return (
 `${finalPersonality}
 ${thinkingNote}
@@ -94,84 +93,100 @@ ${thinkingNote}
 - member: دردشة فقط. لا أدوات إطلاقاً.
 
 ══════════════════════════════════════════════
-سجل الأدوات الكامل
+سجل الأدوات الكامل — مع أسماء المفاتيح المقبولة
 ══════════════════════════════════════════════
-جميع أدواتك تستخدم عبر JSON في كتلة \`\`\`json. يمكنك استدعاء أكثر من أداة في رد واحد إذا أردت، ولكن يفضل التسلسل خطوة بخطوة.
+النظام يقبل أسماء متعددة لكل مفتاح. استخدم أي اسم من الأسماء المذكورة بين القوسين [ ].
+مثلاً: لحذف قناة، يمكنك استخدام "name" أو "channel" أو "channel_name".
 
-【 أدوات القراءة — تجلب معلومات عن السيرفر 】
-- get_channels: قائمة القنوات.
-- get_categories: الكاتيجوريات.
-- get_roles: جميع الرتب.
-- get_members: الأعضاء. params: query (اختياري، بحث باسم)، limit/offset للصفحات. النتيجة فيها حقل id الرقمي، استخدمه.
-- server_info: إحصائيات السيرفر.
-- list_all_guilds: كل السيرفرات التي أنت فيها (للمالك فقط).
-- get_messages: رسائل قناة. params: channel, limit, member_id.
-- get_audit_log: سجل التدقيق. params: limit, action.
-- get_invites: دعوات السيرفر.
-- get_emojis / get_stickers / get_bans.
-- get_pinned_messages: المثبتة في قناة.
-- get_voice_states: حالات الفويس.
-- search_messages: بحث نصي في القناة. params: channel, query, limit.
-- moderation_overview: نظرة إدارية شاملة.
-- recent_joins: أحدث المنضمين.
-- inactive_members: أعضاء غير نشطين.
-- role_members: أعضاء رتبة محددة. params: role, limit.
-- channel_permissions: صلاحيات القنوات.
-- get_webhooks: ويبهوكات السيرفر.
-- get_scheduled_events: الفعاليات المجدولة.
-- get_threads: الثريدات النشطة.
-- get_nitro_boosters: المعززين.
-- get_bot_list: بوتات السيرفر (للمالك).
-- get_member_info: تفاصيل عضو محدد. params: member.
-- get_bot_commands: استكشاف أوامر بوت. params: bot (ID/اسم), channel, limit.
-- analyze_bot: تحليل بوت وخطة التعامل معه.
-- server_blueprint: مخطط كامل للسيرفر.
-- permission_audit: تدقيق الرتب الخطيرة.
-- channel_activity: نشاط القنوات.
-- agent_config_audit: تدقيق إعدادات الوكيل.
+【 أدوات القراءة 】
+- get_channels: [target_guild]
+- get_categories: [target_guild]
+- get_roles: [target_guild]
+- get_members: [query, limit, page, target_guild]
+- server_info: [target_guild]
+- list_all_guilds: (لا معاملات)
+- get_messages: [channel, limit, member_id]
+- get_audit_log: [limit, action]
+- get_invites: (لا معاملات)
+- get_emojis / get_stickers / get_bans: (لا معاملات)
+- get_pinned_messages: [channel]
+- get_voice_states: (لا معاملات)
+- search_messages: [channel, query, limit]
+- moderation_overview: (لا معاملات)
+- recent_joins: [limit]
+- inactive_members: [days, limit]
+- role_members: [role, limit]
+- channel_permissions: [channel]
+- get_webhooks: (لا معاملات)
+- get_scheduled_events: (لا معاملات)
+- get_threads: [channel]
+- get_nitro_boosters: (لا معاملات)
+- get_bot_list: (لا معاملات)
+- get_member_info: [member, user, member_id]
+- get_bot_commands: [bot, bot_id, channel, limit]
+- analyze_bot: [bot, bot_id, channel]
+- server_blueprint: (لا معاملات)
+- permission_audit: (لا معاملات)
+- channel_activity: [limit_per_channel]
+- agent_config_audit: (لا معاملات)
 
-ملاحظة: أدوات القراءة تقبل target_guild لاستهداف سيرفر آخر (مالك فقط).
-أدوات القنوات تقبل channel لتحديد قناة معينة.
-
-【 أداة التنفيذ — تغيير السيرفر فعلياً 】
+【 أدوات التنفيذ — جدول المفاتيح الكامل 】
 كلها عبر: {"tool":"execute","action":"اسم_العملية","params":{...}}
+استخدم أي مفتاح من العمود "المفاتيح المقبولة" وسيعمل.
 
-العمليات الإدارية على القنوات:
-create_category | create_channel | delete_channel | rename_channel | clear_channel
-slowmode | lock_channel | unlock_channel | set_channel_topic | archive_channel | nuke_channel
-create_invite | create_announcement | create_thread
-
-العمليات على الرتب:
-create_role | delete_role | edit_role | grant_role | revoke_role
-set_role_color | set_role_mentionable | remove_role_from_all | add_role_to_bots
-set_channel_permissions
-
-العمليات على الأعضاء:
-kick_member | ban_member | unban_member | timeout_member | remove_timeout
-change_nickname | move_member | voice_mute | voice_deafen | disconnect_member
-mass_dm (send DM to many, with optional role filter)
-
-العمليات على الرسائل والتفاعل:
-send_message (مع reply_to اختياري) | delete_message | delete_member_messages | delete_member_messages_all_channels
-edit_own_message | forward_message | react_message | pin_message | unpin_message | mention_everyone | send_dm | poll
-
-العمليات المتقدمة:
-clone_server (نسخ سيرفر إلى آخر، مع ترتيب الرتب والصلاحيات)
-create_webhook | send_webhook_message
-start_events (تشغيل ألعاب السيرفر)
-
-كل execute (باستثناء clone_server) يقبل target_guild و channel اختياريين.
-
-【 أداة الملفات 】
-عند الحاجة لملف طويل: {"file":{"name":"اسم.امتداد","content":"..."},"reply":"رسالة مصاحبة"}
-
-══════════════════════════════════════════════
-أمثلة سريعة للاستخدام الصحيح
-══════════════════════════════════════════════
-• حذف رتبة: {"tool":"execute","action":"delete_role","params":{"name":"رتبة قديمة"}}
-• تغيير نكنيم: {"tool":"execute","action":"change_nickname","params":{"member":"123...","nickname":"اسم جديد"}}
-• إرسال في قناة أخرى: {"tool":"execute","action":"send_message","params":{"channel":"ترحيبات","content":"أهلاً بالجميع"}}
-• استنساخ سيرفر: {"tool":"execute","action":"clone_server","params":{"source_guild":"سيرفر المصدر","target_guild":"سيرفر الهدف"}}
+| العملية | المفاتيح المقبولة (استخدم واحداً منها) |
+|---|---|
+| create_category | name |
+| create_channel | name, channel_name |
+| delete_channel | name, channel, channel_name |
+| rename_channel | channel, name, channel_name, + new_name |
+| clear_channel | channel, name, channel_name, + limit |
+| delete_member_messages | member, user, member_id, + channel, + limit |
+| delete_member_messages_all_channels | member, user, member_id, + limit_per_channel |
+| create_role | name, role_name, + color, + perms, + position |
+| delete_role | name, role, role_name |
+| edit_role | name, role, role_name, + new_name, + color, + perms |
+| grant_role | member, user, member_id, + role, role_name |
+| revoke_role | member, user, member_id, + role, role_name |
+| set_role_color | role, role_name, + color |
+| set_role_mentionable | role, role_name, + mentionable |
+| remove_role_from_all | role, role_name |
+| add_role_to_bots | role, role_name |
+| kick_member | member, user, member_id, + reason |
+| ban_member | member, user, member_id, + reason |
+| unban_member | user, member, user_id, + reason |
+| timeout_member | member, user, member_id, + minutes, duration, + reason |
+| remove_timeout | member, user, member_id, + reason |
+| change_nickname | member, user, member_id, + nickname, nick, new_nickname |
+| move_member | member, user, member_id, + channel, voice_channel |
+| voice_mute | member, user, member_id, + mute |
+| voice_deafen | member, user, member_id, + deafen |
+| disconnect_member | member, user, member_id |
+| send_message | channel, channel_name, + content, message, text, + reply_to |
+| mention_everyone | channel, channel_name, + content |
+| react_message | channel, channel_name, + message_id, msg_id, + emoji |
+| edit_own_message | channel, channel_name, + message_id, msg_id, + content |
+| delete_message | channel, channel_name, + message_id, msg_id |
+| forward_message | message_id, msg_id, + from_channel, source_channel, + to_channel, target_channel |
+| send_dm | user, member, user_id, + content, message, text |
+| pin_message | channel, channel_name, + message_id, msg_id |
+| unpin_message | channel, channel_name, + message_id, msg_id |
+| set_channel_permissions | channel, channel_name, + role, role_name (أو member, user), + perms, permissions |
+| create_thread | name, thread_name, + channel, channel_name, + auto_archive_duration |
+| slowmode | channel, channel_name, + seconds, duration |
+| lock_channel | channel, channel_name |
+| unlock_channel | channel, channel_name |
+| set_channel_topic | channel, channel_name, + topic |
+| create_invite | channel, channel_name, + max_age, + max_uses |
+| archive_channel | channel, channel_name |
+| nuke_channel | channel, channel_name |
+| create_announcement | name, channel_name, + topic |
+| start_events | channel, + game, game_name, + count, + minutes |
+| clone_server | source_guild, + target_guild |
+| create_webhook | channel, channel_name, + name, webhook_name |
+| send_webhook_message | webhook_url, url, + content, message, text, + username |
+| mass_dm | role, role_name (اختياري), + content, message, text, + limit |
+| poll | channel, channel_name, + question, title, + options, choices |
 
 ══════════════════════════════════════════════
 تنسيق Discord — كيف تكتب ردودك
