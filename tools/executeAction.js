@@ -136,19 +136,13 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
-/**
- * ينظف اسم القناة/الكاتيجوري من الأحرف التي قد تسبب مشاكل في Discord API
- * مثل رموز اليونيكود الغريبة، مع الحفاظ على الشكل العام للاسم
- * @param {string} name
- * @returns {string}
- */
 function _cleanName(name) {
     return String(name || '')
-        .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width spaces
-        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // control chars
-        .replace(/\s+/g, ' ') // normalize spaces
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+        .replace(/\s+/g, ' ')
         .trim()
-        .slice(0, 100) || 'قناة'; // fallback آمن
+        .slice(0, 100) || 'قناة';
 }
 
 function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
@@ -210,12 +204,6 @@ function requireOneParam(params, actionName, ...keys) {
 //  MEDIA HELPERS — جلب الصور وإرسالها
 // ══════════════════════════════════════════════════════════════
 
-/**
- * يجلب صورة من رابط ويجهزها للإرسال كـ AttachmentBuilder
- * @param {string} url - رابط الصورة
- * @param {string} fallbackName - اسم الملف الاحتياطي
- * @returns {Promise<import('discord.js').AttachmentBuilder|null>}
- */
 async function _fetchAsAttachment(url, fallbackName = 'image.png') {
     try {
         const response = await axios.get(url, {
@@ -233,9 +221,6 @@ async function _fetchAsAttachment(url, fallbackName = 'image.png') {
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
-    // ── إرجاع مرفقات الصور إلى agent.js ─ـ
-    let _attachmentsToSend = [];
-    
     if (params && typeof params === 'object' && !params.name && !params.channel && !params.member && !params.role) {
         for (const key of Object.keys(params)) {
             if (params[key] && typeof params[key] === 'object' && !Array.isArray(params[key])) {
@@ -259,7 +244,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ── أدوات الصور والوسائط الجديدة ─ـ
+        // ── أدوات الصور والوسائط ─ـ
         if (a === 'get_server_icon') {
             const guildId = getParam(params, 'guild', 'guild_id') || guild.id;
             const targetGuild = client.guilds.cache.get(String(guildId)) || guild;
@@ -267,8 +252,10 @@ async function executeAction(guild, channel, action, params, client) {
             if (!iconURL) return _err('❌ هذا السيرفر لا يملك أيقونة.');
             const attachment = await _fetchAsAttachment(iconURL, `icon_${targetGuild.id}.png`);
             if (!attachment) return _err('❌ فشل جلب الأيقونة.');
-            _attachmentsToSend.push(attachment);
-            return _ok(`✅ أيقونة سيرفر **${targetGuild.name}**`, { attachments: true });
+            // إرجاع المرفق مع النتيجة ليقوم agent.js بإرساله
+            const result = _ok(`✅ أيقونة سيرفر **${targetGuild.name}**`);
+            result.__attachments = [attachment];
+            return result;
         }
 
         if (a === 'get_server_banner') {
@@ -278,8 +265,9 @@ async function executeAction(guild, channel, action, params, client) {
             if (!bannerURL) return _err('❌ هذا السيرفر لا يملك بانر.');
             const attachment = await _fetchAsAttachment(bannerURL, `banner_${targetGuild.id}.png`);
             if (!attachment) return _err('❌ فشل جلب البانر.');
-            _attachmentsToSend.push(attachment);
-            return _ok(`✅ بانر سيرفر **${targetGuild.name}**`, { attachments: true });
+            const result = _ok(`✅ بانر سيرفر **${targetGuild.name}**`);
+            result.__attachments = [attachment];
+            return result;
         }
 
         if (a === 'send_image') {
@@ -297,8 +285,10 @@ async function executeAction(guild, channel, action, params, client) {
             const content = String(getParam(params, 'content', 'caption', 'text') || '').trim();
             const attachment = await _fetchAsAttachment(String(url), 'image.png');
             if (!attachment) return _err('❌ فشل جلب الصورة من الرابط.');
-            await targetCh.send({ content: content.slice(0, 2000) || undefined, files: [attachment] });
-            return _ok(`✅ تم إرسال الصورة إلى **#${targetCh.name}**`);
+            const sent = await targetCh.send({ content: content.slice(0, 2000) || undefined, files: [attachment] });
+            const result = _ok(`✅ تم إرسال الصورة إلى **#${targetCh.name}**`);
+            result.__attachments = [attachment];
+            return result;
         }
 
         // ─ـ قنوات ─ـ
@@ -1070,7 +1060,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
         }
 
-        // ─ـ clone_server (مع تنظيف أسماء) ─ـ
+        // ─ـ clone_server ─ـ
         if (a === 'clone_server') {
             let sourceGuild = guild;
             if (params.source_guild) {
