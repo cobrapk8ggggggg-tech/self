@@ -17,7 +17,7 @@ const {
 } = require('../utils');
 
 // ══════════════════════════════════════════════════════════════
-//  SAFE API CALL — غلاف لمكالمات Discord API مع معالجة 429
+//  SAFE API CALL
 // ══════════════════════════════════════════════════════════════
 
 async function safeApiCall(apiCall, maxRetries = 3) {
@@ -42,7 +42,7 @@ async function safeApiCall(apiCall, maxRetries = 3) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SAFE PURGE — حذف آمن مع pagination صحيح
+//  SAFE PURGE
 // ══════════════════════════════════════════════════════════════
 
 async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
@@ -178,7 +178,7 @@ function channelTypeForClone(ch, client) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  PARAM HELPER — استخراج المعاملات بمرونة
+//  PARAM HELPER
 // ══════════════════════════════════════════════════════════════
 
 function getParam(params, ...keys) {
@@ -201,7 +201,7 @@ function requireOneParam(params, actionName, ...keys) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  MEDIA HELPERS — جلب الصور وإرسالها
+//  MEDIA HELPERS
 // ══════════════════════════════════════════════════════════════
 
 async function _fetchAsAttachment(url, fallbackName = 'image.png') {
@@ -217,7 +217,7 @@ async function _fetchAsAttachment(url, fallbackName = 'image.png') {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  EXECUTE ACTION — الأداة الرئيسية للتنفيذ
+//  EXECUTE ACTION
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
@@ -244,23 +244,22 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ── أدوات الصور والوسائط ─ـ
+        // ── أدوات الصور والوسائط (مُصلحة لاستخدام findGuild) ─ـ
         if (a === 'get_server_icon') {
-            const guildId = getParam(params, 'guild', 'guild_id') || guild.id;
-            const targetGuild = client.guilds.cache.get(String(guildId)) || guild;
+            const guildQuery = getParam(params, 'guild', 'guild_id');
+            const targetGuild = guildQuery ? (findGuild(client, String(guildQuery)) || guild) : guild;
             const iconURL = targetGuild.iconURL({ size: 4096, format: 'png' });
             if (!iconURL) return _err('❌ هذا السيرفر لا يملك أيقونة.');
             const attachment = await _fetchAsAttachment(iconURL, `icon_${targetGuild.id}.png`);
             if (!attachment) return _err('❌ فشل جلب الأيقونة.');
-            // إرجاع المرفق مع النتيجة ليقوم agent.js بإرساله
             const result = _ok(`✅ أيقونة سيرفر **${targetGuild.name}**`);
             result.__attachments = [attachment];
             return result;
         }
 
         if (a === 'get_server_banner') {
-            const guildId = getParam(params, 'guild', 'guild_id') || guild.id;
-            const targetGuild = client.guilds.cache.get(String(guildId)) || guild;
+            const guildQuery = getParam(params, 'guild', 'guild_id');
+            const targetGuild = guildQuery ? (findGuild(client, String(guildQuery)) || guild) : guild;
             const bannerURL = targetGuild.bannerURL({ size: 4096, format: 'png' });
             if (!bannerURL) return _err('❌ هذا السيرفر لا يملك بانر.');
             const attachment = await _fetchAsAttachment(bannerURL, `banner_${targetGuild.id}.png`);
