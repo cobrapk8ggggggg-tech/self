@@ -1006,7 +1006,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
         }
 
-        // ── clone_server ──
+        // ── clone_server (مع دعم تحديد ما تريد نسخه) ──
         if (a === 'clone_server') {
             let sourceGuild = guild;
             if (params.source_guild) {
@@ -1024,111 +1024,132 @@ async function executeAction(guild, channel, action, params, client) {
                 return _err('❌ المصدر والهدف لا يمكن أن يكونا نفس السيرفر.');
             }
 
+            // ── قراءة خيارات التخصيص (افتراضياً true لنسخ كل شيء) ──
+            const includeRoles      = getParam(params, 'include_roles', 'roles') !== false;
+            const includeCategories = getParam(params, 'include_categories', 'categories') !== false;
+            const includeChannels   = getParam(params, 'include_channels', 'channels') !== false;
+            // includePermissions تابع لـ includeChannels/includeCategories (لا حاجة لتعطيلها منفردة)
+
             let createdRoles = 0, createdCategories = 0, createdChannels = 0;
             const errors     = [];
             const roleMap    = new Map();
             const catMap     = new Map();
 
-            const sortedRoles = [...sourceGuild.roles.cache.values()]
-                .filter(r => r.name !== '@everyone')
-                .sort((a, b) => b.position - a.position);
-            for (const r of sortedRoles) {
-                try {
-                    const newRole = await target.roles.create({
-                        name       : r.name,
-                        color      : r.color,
-                        permissions: r.permissions,
-                        hoist      : r.hoist,
-                        mentionable: r.mentionable,
-                        reason     : `Clone role from ${sourceGuild.name}`,
-                    });
-                    roleMap.set(r.id, newRole);
-                    createdRoles++;
-                } catch (e) {
-                    errors.push(`رتبة ${r.name}: ${e.message}`);
-                }
-            }
-
-            if (roleMap.size > 0) {
-                try {
-                    const botMember = await target.members.fetchMe();
-                    const myTop = botMember.roles.highest.position;
-                    const positions = [];
-                    const orderedNew = sortedRoles
-                        .map(r => roleMap.get(r.id))
-                        .filter(Boolean);
-                    let pos = Math.max(1, myTop - 1);
-                    for (const role of orderedNew) {
-                        if (pos < 1) break;
-                        positions.push({ role: role, position: pos });
-                        pos--;
-                    }
-                    if (positions.length) {
-                        await target.roles.setPositions(positions);
-                    }
-                } catch (e) {
-                    errors.push(`ترتيب الرتب: ${e.message}`);
-                }
-            }
-
-            const sortedCats = [...sourceGuild.channels.cache.values()]
-                .filter(c => isCategoryChannel(c))
-                .sort((a, b) => a.position - b.position);
-            for (const cat of sortedCats) {
-                try {
-                    const newCat = await target.channels.create({
-                        name: cat.name,
-                        type: channelTypeForClone(cat, client),
-                        permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
-                        position: cat.position,
-                    });
-                    catMap.set(cat.id, newCat);
-                    createdCategories++;
-                } catch (e) {
-                    errors.push(`كاتيكوري ${cat.name}: ${e.message}`);
-                }
-            }
-
-            const sortedChannels = [...sourceGuild.channels.cache.values()]
-                .filter(c => !isCategoryChannel(c))
-                .sort((a, b) => a.position - b.position);
-            for (const ch of sortedChannels) {
-                try {
-                    const targetCat = ch.parentId ? catMap.get(ch.parentId) || null : null;
-                    const commonOpts = {
-                        name: ch.name,
-                        type: channelTypeForClone(ch, client),
-                        parent: targetCat,
-                        permissionOverwrites: mapPermissionOverwrites(ch, target, roleMap),
-                        position: ch.position,
-                    };
-                    if (isTextChannel(ch)) {
-                        Object.assign(commonOpts, {
-                            topic: ch.topic || null,
-                            nsfw: ch.nsfw,
-                            rateLimitPerUser: ch.rateLimitPerUser,
+            // 1. نسخ الرتب (إذا includeRoles !== false)
+            if (includeRoles) {
+                const sortedRoles = [...sourceGuild.roles.cache.values()]
+                    .filter(r => r.name !== '@everyone')
+                    .sort((a, b) => b.position - a.position);
+                for (const r of sortedRoles) {
+                    try {
+                        const newRole = await target.roles.create({
+                            name       : r.name,
+                            color      : r.color,
+                            permissions: r.permissions,
+                            hoist      : r.hoist,
+                            mentionable: r.mentionable,
+                            reason     : `Clone role from ${sourceGuild.name}`,
                         });
-                    } else if (isVoiceChannel(ch)) {
-                        Object.assign(commonOpts, {
-                            bitrate: Math.min(ch.bitrate || 64000, target.maximumBitrate || 96000),
-                            userLimit: ch.userLimit,
-                        });
+                        roleMap.set(r.id, newRole);
+                        createdRoles++;
+                    } catch (e) {
+                        errors.push(`رتبة ${r.name}: ${e.message}`);
                     }
-                    await target.channels.create(commonOpts);
-                    createdChannels++;
-                } catch (e) {
-                    errors.push(`روم ${ch.name}: ${e.message}`);
+                }
+
+                if (roleMap.size > 0) {
+                    try {
+                        const botMember = await target.members.fetchMe();
+                        const myTop = botMember.roles.highest.position;
+                        const positions = [];
+                        const orderedNew = sortedRoles
+                            .map(r => roleMap.get(r.id))
+                            .filter(Boolean);
+                        let pos = Math.max(1, myTop - 1);
+                        for (const role of orderedNew) {
+                            if (pos < 1) break;
+                            positions.push({ role: role, position: pos });
+                            pos--;
+                        }
+                        if (positions.length) {
+                            await target.roles.setPositions(positions);
+                        }
+                    } catch (e) {
+                        errors.push(`ترتيب الرتب: ${e.message}`);
+                    }
                 }
             }
 
-            let summary = (
-                `✅ تم استنساخ **${sourceGuild.name}** → **${target.name}**\n` +
-                `الرتب: ${createdRoles} | الكاتيكوريات: ${createdCategories} | الرومات: ${createdChannels} | الترتيب: محفوظ`
-            );
+            // 2. نسخ الكاتيجوريات (إذا includeCategories !== false)
+            if (includeCategories) {
+                const sortedCats = [...sourceGuild.channels.cache.values()]
+                    .filter(c => isCategoryChannel(c))
+                    .sort((a, b) => a.position - b.position);
+                for (const cat of sortedCats) {
+                    try {
+                        const newCat = await target.channels.create({
+                            name: cat.name,
+                            type: channelTypeForClone(cat, client),
+                            permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
+                            position: cat.position,
+                        });
+                        catMap.set(cat.id, newCat);
+                        createdCategories++;
+                    } catch (e) {
+                        errors.push(`كاتيكوري ${cat.name}: ${e.message}`);
+                    }
+                }
+            }
+
+            // 3. نسخ القنوات (إذا includeChannels !== false)
+            if (includeChannels) {
+                const sortedChannels = [...sourceGuild.channels.cache.values()]
+                    .filter(c => !isCategoryChannel(c))
+                    .sort((a, b) => a.position - b.position);
+                for (const ch of sortedChannels) {
+                    try {
+                        // إذا الكاتيجوريات غير مشمولة، نضع القناة بدون parent
+                        const targetCat = (includeCategories && ch.parentId) ? (catMap.get(ch.parentId) || null) : null;
+                        const commonOpts = {
+                            name: ch.name,
+                            type: channelTypeForClone(ch, client),
+                            parent: targetCat,
+                            permissionOverwrites: includeRoles ? mapPermissionOverwrites(ch, target, roleMap) : [],
+                            position: ch.position,
+                        };
+                        if (isTextChannel(ch)) {
+                            Object.assign(commonOpts, {
+                                topic: ch.topic || null,
+                                nsfw: ch.nsfw,
+                                rateLimitPerUser: ch.rateLimitPerUser,
+                            });
+                        } else if (isVoiceChannel(ch)) {
+                            Object.assign(commonOpts, {
+                                bitrate: Math.min(ch.bitrate || 64000, target.maximumBitrate || 96000),
+                                userLimit: ch.userLimit,
+                            });
+                        }
+                        await target.channels.create(commonOpts);
+                        createdChannels++;
+                    } catch (e) {
+                        errors.push(`روم ${ch.name}: ${e.message}`);
+                    }
+                }
+            }
+
+            // ── بناء ملخص العمليات ──
+            const parts = [];
+            if (includeRoles) parts.push(`الرتب: ${createdRoles}`);
+            if (includeCategories) parts.push(`الكاتيكوريات: ${createdCategories}`);
+            if (includeChannels) parts.push(`الرومات: ${createdChannels}`);
+            const doneParts = parts.length ? parts.join(' | ') : 'لم يُطلب نسخ أي عنصر';
+            const status = errors.length ? 'مع أخطاء' : 'بنجاح';
+
+            let summary = `✅ ${status} استنساخ **${sourceGuild.name}** → **${target.name}**\n${doneParts}`;
             if (errors.length) {
                 summary += `\n⚠️ بعض العناصر فشلت (${errors.length}): ` + errors.slice(0, 5).join('، ');
             }
-            return { ok: !errors.length || createdChannels > 0, msg: summary };
+            return { ok: !errors.length || (createdRoles + createdCategories + createdChannels) > 0, msg: summary };
         }
 
         // ── Webhook, DM, Poll ──
