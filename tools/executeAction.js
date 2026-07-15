@@ -149,7 +149,13 @@ function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
                 id = mapped.id;
             }
         }
-        overwrites.push({ id, allow: ow.allow.bitfield, deny: ow.deny.bitfield, type: ow.type });
+        // تحويل BigInt إلى string لتجنب مشكلة التسلسل في Discord API
+        overwrites.push({
+            id,
+            allow: String(ow.allow.bitfield),
+            deny: String(ow.deny.bitfield),
+            type: ow.type
+        });
     }
     return overwrites;
 }
