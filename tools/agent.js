@@ -107,16 +107,41 @@ function extractJsonObjects(text) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  FALSE SUCCESS DETECTION
+//  FALSE SUCCESS DETECTION — ذكي وسياقي
 // ══════════════════════════════════════════════════════════════
 
+// كلمات تدل على أن المستخدم طلب إجراءً إدارياً فعلياً (وليس مجرد سؤال أو شرح)
+const ADMIN_ACTION_REQUEST_RE = /(غير|حول|عدل|امسح|احذف|أنشئ|اسحب|أعط|ركّل|بند|فك|نظف|أرشف|انسخ|أرسل|منشن|ثبت|افتح|اقفل)/i;
+
+// كلمات تدل على أن النموذج يدّعي النجاح دون استخدام أداة
 const FALSE_SUCCESS_RE = /(تم\s|✅|نفذت|خلصت|سويت|غيرت|حذفت|أنشأت|أضفت|عدلت|أرسلت|ركّلت|بندت|فكّيت|أعطيت|سحبت)/i;
+
+/**
+ * يفحص ما إذا كان يجب تفعيل الـ guard لمنع الادعاء الكاذب.
+ * @param {string} raw - رد النموذج
+ * @param {string} userMsg - رسالة المستخدم الأصلية
+ * @returns {boolean}
+ */
+function shouldTriggerFalseSuccessGuard(raw, userMsg) {
+    // 1. هل النص يحوي كلمة نجاح كاذبة؟
+    if (!FALSE_SUCCESS_RE.test(raw)) return false;
+    
+    // 2. هل طلب المستخدم الأصلي يوحي بأنه يريد إجراءً إدارياً فعلياً؟
+    // إذا كان المستخدم يسأل فقط ("كيف أقوم بـ...")، فلن نوقف الرد.
+    if (!ADMIN_ACTION_REQUEST_RE.test(userMsg)) return false;
+    
+    // 3. تحقق إضافي: إذا كان النص يحوي علامات استفهام أو كلمات استفسار، فهو شرح على الأغلب.
+    if (/[?؟]/.test(raw) || /(شرح|مثال|يعني|المقصود|طريقة|كيف)/i.test(raw)) return false;
+
+    return true;
+}
 
 // ══════════════════════════════════════════════════════════════
 //  AGENT LOOP — حلقة الوكيل
 // ══════════════════════════════════════════════════════════════
 
 const MAX_STEPS = 24;
+const MAX_FALSE_SUCCESS_ATTEMPTS = 1; // محاولة تصحيح واحدة فقط
 
 async function runAgent(
     guild, channel, userMsg, userInfo, botContext, botName,
@@ -133,6 +158,8 @@ async function runAgent(
         `[مستوى صلاحية المستخدم داخل البوت: ${accessLevel}]\n\n` +
         `${botContext}\n\n${userInfo}\n\nUser: ${userMsg}`
     );
+    
+    let falseSuccessCount = 0; // عداد لكسر الحلقة اللانهائية
 
     for (let step = 0; step < MAX_STEPS; step++) {
         console.log(`[Agent ${step + 1}/${MAX_STEPS}] mode=${mode} thinking=${thinking} access=${accessLevel}`);
@@ -248,7 +275,6 @@ async function runAgent(
 
                 let result;
                 try {
-                    // getTargetCh أصبحت async
                     const getTargetCh = async () => {
                         if (params.channel) {
                             const found = await findChannel(targetGuild, String(params.channel));
@@ -347,11 +373,13 @@ async function runAgent(
         }
 
         if (!allResults.length) {
-            if (FALSE_SUCCESS_RE.test(raw) && step === 0) {
+            // Guard ذكي: يتحقق من سياق الطلب قبل تفعيل كشف الكذب
+            if (shouldTriggerFalseSuccessGuard(raw, userMsg) && falseSuccessCount <= MAX_FALSE_SUCCESS_ATTEMPTS) {
+                falseSuccessCount++;
                 curPrompt =
                     `لاحظت أنك كتبت رداً يوحي بتنفيذ إجراء إداري (تغيير/حذف/إنشاء) لكنك لم تستدعِ أي أداة فعلياً. ` +
                     `أنت لا تملك أي قدرة على تنفيذ أي شيء إداري بدون استدعاء أداة execute أو أداة قراءة أولاً. ` +
-                    `أعد المحاولة الآن: إذا كان الطلب يحتاج تنفيذاً، استدعِ الأداة المناسبة عبر \`\`\`json فوراً. لا ترد نصياً بأنك نفذت شيئاً لم تنفذه.`;
+                    `أعد المحاولة الآن: استدعِ الأداة المناسبة عبر \`\`\`json فوراً. لا ترد نصياً بأنك نفذت شيئاً لم تنفذه. اذا كان مجرد شرح تجاهل كلامي بالكامل واعد كتابة رسالتك السابقة بشكل حرفي.`;
                 continue;
             }
 
