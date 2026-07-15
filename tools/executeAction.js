@@ -34,7 +34,6 @@ async function safeApiCall(apiCall, maxRetries = 3) {
         } catch (e) {
             if (e.httpStatus === 429 || e.status === 429) {
                 const retryAfter = (e.retryAfter || 2) * 1000;
-                // إذا كان Global Rate Limit (عادةً يظهر مع رسالة "Global rate limit exceeded") نوقف فوراً
                 if (e.global || String(e.message).includes('global')) {
                     throw new Error('Global rate limit exceeded');
                 }
@@ -52,20 +51,12 @@ async function safeApiCall(apiCall, maxRetries = 3) {
 //  SAFE PURGE — حذف آمن مع pagination صحيح
 // ══════════════════════════════════════════════════════════════
 
-/**
- * حذف آمن للرسائل - يدعم البوت والحساب الحقيقي
- * @param {import('discord.js').TextChannel} channel
- * @param {number} limit
- * @param {Function|null} checkFn - فلترة اختيارية
- * @param {string} tokenType - 'bot' أو 'user'
- * @returns {Promise<number>}
- */
 async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
     let totalDeleted = 0;
     let remaining = limit;
     let beforeId = null;
     const isUserToken = tokenType === 'user';
-    const deleteDelay = isUserToken ? 700 : 0; // تأخير بين الحذف الفردي للحساب الحقيقي (مللي ثانية)
+    const deleteDelay = isUserToken ? 700 : 0;
 
     while (remaining > 0) {
         const toFetch = Math.min(remaining, 100);
@@ -80,11 +71,9 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
         }
         if (!fetched.size) break;
 
-        // نحرّك المؤشر لأقدم رسالة في الدفعة بغض النظر عن الفلترة
         const oldest = fetched.reduce((a, b) => (a.createdTimestamp < b.createdTimestamp ? a : b));
         beforeId = oldest.id;
 
-        // تطبيق الفلترة إن وجدت
         const toDelete = checkFn ? fetched.filter(checkFn) : fetched;
         if (!toDelete.size) {
             remaining -= toFetch;
@@ -93,7 +82,6 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
         }
 
         if (isUserToken) {
-            // الحساب الحقيقي: حذف فردي لكل رسالة
             for (const msg of toDelete.values()) {
                 try {
                     await safeApiCall(() => msg.delete());
@@ -105,16 +93,13 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
                         await new Promise(r => setTimeout(r, retryAfter));
                         try { await msg.delete(); totalDeleted++; } catch (_) {}
                     }
-                    // إذا كانت الرسالة قديمة جداً أو لا يمكن حذفها، نستمر
                 }
             }
         } else {
-            // البوت: فصل الرسائل الحديثة (أقل من 14 يوم) والقديمة
             const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
             const recent = toDelete.filter(m => m.createdTimestamp > cutoff);
             const old    = toDelete.filter(m => m.createdTimestamp <= cutoff);
 
-            // حذف الحديثة بـ bulkDelete
             if (recent.size > 0) {
                 try {
                     if (recent.size > 1) {
@@ -125,14 +110,12 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
                         totalDeleted += 1;
                     }
                 } catch (e) {
-                    // إذا فشل bulkDelete (مثلاً صلاحية ناقصة) نحاول فردي
                     for (const msg of recent.values()) {
                         try { await msg.delete(); totalDeleted++; } catch (_) {}
                     }
                 }
             }
 
-            // حذف القديمة واحدة واحدة
             for (const msg of old.values()) {
                 try {
                     await safeApiCall(() => msg.delete());
@@ -144,12 +127,12 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
                         try { await msg.delete(); totalDeleted++; } catch (_) {}
                     }
                 }
-                if (!isUserToken) await new Promise(r => setTimeout(r, 300)); // تجنب الضغط على API
+                if (!isUserToken) await new Promise(r => setTimeout(r, 300));
             }
         }
 
         remaining -= toFetch;
-        if (fetched.size < toFetch) break; // انتهت الرسائل في القناة
+        if (fetched.size < toFetch) break;
     }
 
     return totalDeleted;
@@ -163,17 +146,14 @@ function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
     const overwrites = [];
     for (const [, ow] of channel.permissionOverwrites.cache) {
         let id = ow.id;
-        // إذا كانت الكتابة تشير إلى رتبة أو مستخدم
         if (ow.type === 0 || channel.guild.roles.cache.has(ow.id)) {
             if (ow.id === channel.guild.id) {
-                id = targetGuild.id; // @everyone
+                id = targetGuild.id;
             } else {
                 const mapped = roleMap.get(ow.id);
-                if (!mapped) continue; // تجاهل الرتب التي فشل إنشاؤها
+                if (!mapped) continue;
                 id = mapped.id;
             }
-        } else {
-            // لكتابات أعضاء محددين – نحتفظ بها كما هي لأنها تعتمد على مستخدمين خارجيين غالباً
         }
         overwrites.push({ id, allow: ow.allow.bitfield, deny: ow.deny.bitfield, type: ow.type });
     }
@@ -193,19 +173,9 @@ function channelTypeForClone(ch, client) {
 //  EXECUTE ACTION — الأداة الرئيسية للتنفيذ
 // ══════════════════════════════════════════════════════════════
 
-/**
- * ينفّذ إجراءً على Discord
- * @param {import('discord.js').Guild} guild
- * @param {import('discord.js').TextChannel} channel
- * @param {string} action
- * @param {object} params
- * @param {import('discord.js').Client} client
- * @returns {Promise<object>}
- */
 async function executeAction(guild, channel, action, params, client) {
-    const tokenType = client.__agentTokenType || 'bot'; // 'user' أو 'bot'
+    const tokenType = client.__agentTokenType || 'bot';
     try {
-        // ── دعم target_guild ──
         if (params.target_guild) {
             const foundGuild = findGuild(client, String(params.target_guild));
             if (!foundGuild) return _err(`❌ ما لقيت سيرفر: **${params.target_guild}**`);
@@ -215,16 +185,14 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ────────────────────────────────
-        //  قنوات
-        // ────────────────────────────────
+        // ── قنوات ──
         if (a === 'create_category') {
             const cat = await guild.channels.create({ name: params.name, type: channelCreateType('category', tokenType) });
             return _ok(`✅ تم إنشاء الكاتيكوري **${cat.name}** في **${guild.name}**`);
         }
 
         if (a === 'create_channel') {
-            const catObj = params.category ? findCategory(guild, String(params.category)) : null;
+            const catObj = params.category ? await findCategory(guild, String(params.category)) : null;
             const type   = (params.type || 'text').toLowerCase();
             const chType = channelCreateType(type === 'voice' ? 'voice' : 'text', tokenType);
             const ch     = await guild.channels.create({
@@ -237,7 +205,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_channel') {
-            const ch = findChannel(guild, String(params.name));
+            const ch = await findChannel(guild, String(params.name));
             if (!ch) return _err(`❌ ما لقيت روم: **${params.name}**`);
             const name = ch.name;
             await ch.delete();
@@ -245,19 +213,18 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'rename_channel') {
-            const ch = findChannel(guild, String(params.channel));
+            const ch = await findChannel(guild, String(params.channel));
             if (!ch) return _err(`❌ ما لقيت روم: **${params.channel}**`);
             const old = ch.name;
             await ch.edit({ name: params.new_name });
             return _ok(`✅ تم تغيير اسم **${old}** → **${params.new_name}**`);
         }
 
-        // ── clear_channel (مُصلح) ──
         if (a === 'clear_channel') {
             let targetCh = null;
             if (params.channel) {
                 const chQ  = String(params.channel);
-                const found = findChannel(guild, chQ);
+                const found = await findChannel(guild, chQ);
                 if (found && isTextChannel(found)) {
                     targetCh = found;
                 } else {
@@ -278,7 +245,6 @@ async function executeAction(guild, channel, action, params, client) {
 
             const limit = Number(params.limit || 100);
             let checkFn = null;
-
             if (params.before) {
                 let beforeId;
                 try {
@@ -293,19 +259,16 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${deleted}** رسالة من **#${targetCh.name}**`);
         }
 
-        // ── delete_member_messages (مُصلح) ──
         if (a === 'delete_member_messages') {
             const memberQ = String(params.member || '');
             let member    = await findMember(guild, memberQ, client);
             let memberId  = null;
 
             if (!member) {
-                // محاولة fetch
                 try {
                     member   = await guild.members.fetch(memberQ.trim());
                     memberId = member.id;
                 } catch (_) {
-                    // العضو ربما غادر — نستخدم ID مباشرة
                     memberId = memberQ.trim();
                     if (!memberId) return _err(`❌ ما لقيت العضو: **${memberQ}**`);
                 }
@@ -313,11 +276,10 @@ async function executeAction(guild, channel, action, params, client) {
                 memberId = member.id;
             }
 
-            // جلب القناة الهدف
             let targetCh = null;
             if (params.channel) {
                 const chQ  = String(params.channel);
-                const found = findChannel(guild, chQ);
+                const found = await findChannel(guild, chQ);
                 if (found && isTextChannel(found)) {
                     targetCh = found;
                 } else {
@@ -341,7 +303,6 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${deleted}** رسالة للعضو **${displayName}**`);
         }
 
-
         if (a === 'delete_member_messages_all_channels') {
             const memberQ = String(params.member || '').trim();
             if (!memberQ) return _err('❌ حدد العضو (member).');
@@ -364,9 +325,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${totalDeleted}** رسالة للعضو من **${scannedChannels}** قناة ممكنة.`, { deleted: totalDeleted, channels: scannedChannels, failures: failures.slice(0, 5) });
         }
 
-        // ────────────────────────────────
-        //  رتب
-        // ────────────────────────────────
+        // ── رتب ──
         if (a === 'create_role') {
             let color;
             try {
@@ -390,7 +349,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_role') {
-            const role = findRole(guild, String(params.name));
+            const role = await findRole(guild, String(params.name));
             if (!role) return _err(`❌ ما لقيت رتبة: **${params.name}**`);
             const name = role.name;
             await role.delete();
@@ -398,7 +357,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'edit_role') {
-            const role = findRole(guild, String(params.name));
+            const role = await findRole(guild, String(params.name));
             if (!role) return _err(`❌ ما لقيت رتبة: **${params.name}**`);
             const kw = {};
             if (params.new_name) kw.name  = params.new_name;
@@ -414,7 +373,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'grant_role') {
             const member = await findMember(guild, String(params.member), client);
-            const role   = findRole(guild, String(params.role));
+            const role   = await findRole(guild, String(params.role));
             if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
             if (!role)   return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             await member.roles.add(role);
@@ -423,7 +382,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'revoke_role') {
             const member = await findMember(guild, String(params.member), client);
-            const role   = findRole(guild, String(params.role));
+            const role   = await findRole(guild, String(params.role));
             if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
             if (!role)   return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             await member.roles.remove(role);
@@ -431,7 +390,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'set_role_color') {
-            const role = findRole(guild, String(params.role));
+            const role = await findRole(guild, String(params.role));
             if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             const colorInt = parseInt(String(params.color || '#99AAB5').replace('#', ''), 16);
             await role.edit({ color: colorInt });
@@ -439,7 +398,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'set_role_mentionable') {
-            const role = findRole(guild, String(params.role));
+            const role = await findRole(guild, String(params.role));
             if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             const mentionable = Boolean(params.mentionable !== false);
             await role.edit({ mentionable });
@@ -447,7 +406,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'remove_role_from_all') {
-            const role = findRole(guild, String(params.role));
+            const role = await findRole(guild, String(params.role));
             if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             let count = 0;
             for (const mem of role.members.values()) {
@@ -458,7 +417,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'add_role_to_bots') {
-            const role = findRole(guild, String(params.role));
+            const role = await findRole(guild, String(params.role));
             if (!role) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             let count = 0;
             for (const mem of guild.members.cache.values()) {
@@ -470,9 +429,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🤖 تم إعطاء رتبة **${role.name}** إلى **${count}** بوت`);
         }
 
-        // ────────────────────────────────
-        //  أعضاء
-        // ────────────────────────────────
+        // ── أعضاء ──
         if (a === 'kick_member') {
             const member = await findMember(guild, String(params.member), client);
             if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
@@ -522,7 +479,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'move_member') {
             const member = await findMember(guild, String(params.member), client);
             if (!member) return _err(`❌ ما لقيت العضو: **${params.member}**`);
-            const vc = findChannel(guild, String(params.channel));
+            const vc = await findChannel(guild, String(params.channel));
             if (!vc || !isVoiceChannel(vc)) {
                 return _err(`❌ ما لقيت فويس: **${params.channel}**`);
             }
@@ -553,13 +510,11 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📤 تم فصل **${member.displayName}** من الفويس`);
         }
 
-        // ────────────────────────────────
-        //  رسائل ومنشن
-        // ────────────────────────────────
+        // ── رسائل ومنشن ──
         if (a === 'send_message') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -572,7 +527,7 @@ async function executeAction(guild, channel, action, params, client) {
                 const replyId = String(params.reply_to);
                 let ref = await targetCh.messages.fetch(replyId).catch(() => null);
                 if (!ref && params.reply_channel) {
-                    const replyCh = findChannel(guild, String(params.reply_channel)) || await client.channels.fetch(String(params.reply_channel)).catch(() => null);
+                    const replyCh = await findChannel(guild, String(params.reply_channel)) || await client.channels.fetch(String(params.reply_channel)).catch(() => null);
                     if (replyCh && isTextChannel(replyCh)) {
                         targetCh = replyCh;
                         ref = await replyCh.messages.fetch(replyId).catch(() => null);
@@ -599,7 +554,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'mention_everyone') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -615,9 +570,8 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم إرسال منشن @everyone في **#${targetCh.name}**`, { message_id: sent.id });
         }
 
-
         if (a === 'react_message') {
-            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
             const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
@@ -626,7 +580,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'edit_own_message') {
-            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
             const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
@@ -636,7 +590,7 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'delete_message') {
-            let targetCh = params.channel ? findChannel(guild, String(params.channel)) : channel;
+            let targetCh = params.channel ? await findChannel(guild, String(params.channel)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
             const msg = await targetCh.messages.fetch(String(params.message_id || '')).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة.');
@@ -645,8 +599,8 @@ async function executeAction(guild, channel, action, params, client) {
         }
 
         if (a === 'forward_message') {
-            const fromCh = params.from_channel ? findChannel(guild, String(params.from_channel)) : channel;
-            const toCh = params.to_channel ? findChannel(guild, String(params.to_channel)) : channel;
+            const fromCh = params.from_channel ? await findChannel(guild, String(params.from_channel)) : channel;
+            const toCh = params.to_channel ? await findChannel(guild, String(params.to_channel)) : channel;
             if (!fromCh || !toCh || !isTextChannel(fromCh) || !isTextChannel(toCh)) return _err('❌ حدد قنوات نصية صحيحة.');
             const msg = await fromCh.messages.fetch(String(params.message_id || '')).catch(() => null);
             if (!msg) return _err('❌ لم أجد الرسالة الأصلية.');
@@ -665,7 +619,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'pin_message') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -679,7 +633,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'unpin_message') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -690,16 +644,14 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📌 تم إلغاء تثبيت الرسالة من **#${targetCh.name}**`);
         }
 
-        // ────────────────────────────────
-        //  صلاحيات القنوات (مُصلح)
-        // ────────────────────────────────
+        // ── صلاحيات القنوات ──
         if (a === 'set_channel_permissions') {
-            const chObj = findChannel(guild, String(params.channel || ''));
+            const chObj = await findChannel(guild, String(params.channel || ''));
             if (!chObj) return _err(`❌ ما لقيت القناة: **${params.channel}**`);
 
             let target = null;
             if (params.role) {
-                target = findRole(guild, String(params.role));
+                target = await findRole(guild, String(params.role));
                 if (!target) return _err(`❌ ما لقيت الرتبة: **${params.role}**`);
             } else if (params.member) {
                 target = await findMember(guild, String(params.member), client);
@@ -729,13 +681,11 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
         }
 
-        // ────────────────────────────────
-        //  ثريد وإعلانات وقنوات متفرقة
-        // ────────────────────────────────
+        // ── ثريد وإعلانات ──
         if (a === 'create_thread') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -752,7 +702,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'slowmode') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -767,7 +717,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'lock_channel') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -780,7 +730,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'unlock_channel') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -793,7 +743,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'set_channel_topic') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -806,7 +756,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'create_invite') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && (isTextChannel(found) || isVoiceChannel(found))) {
                     targetCh = found;
                 }
@@ -823,7 +773,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'archive_channel') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -837,7 +787,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'nuke_channel') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -857,9 +807,8 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
 
-
         if (a === 'start_events') {
-            const targetCh = params.channel ? (findChannel(guild, String(params.channel)) || channel) : channel;
+            const targetCh = params.channel ? (await findChannel(guild, String(params.channel)) || channel) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة فعاليات نصية صحيحة.');
             const { runEventSeries } = require('../accountAgent');
             const result = await runEventSeries(client, guild, targetCh, { agentId: client.__agentId || 'default' }, {
@@ -871,9 +820,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
         }
 
-        // ────────────────────────────────
-        //  clone_server (مُصلح بالكامل)
-        // ────────────────────────────────
+        // ── clone_server ──
         if (a === 'clone_server') {
             let sourceGuild = guild;
             if (params.source_guild) {
@@ -893,10 +840,9 @@ async function executeAction(guild, channel, action, params, client) {
 
             let createdRoles = 0, createdCategories = 0, createdChannels = 0;
             const errors     = [];
-            const roleMap    = new Map(); // sourceRoleId -> newRole
+            const roleMap    = new Map();
             const catMap     = new Map();
 
-            // 1. نسخ الرتب (بدون محاولة ترتيب فوري)
             const sortedRoles = [...sourceGuild.roles.cache.values()]
                 .filter(r => r.name !== '@everyone')
                 .sort((a, b) => b.position - a.position);
@@ -917,17 +863,14 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // 2. ترتيب الرتب دفعة واحدة بعد الإنشاء
             if (roleMap.size > 0) {
                 try {
                     const botMember = await target.members.fetchMe();
                     const myTop = botMember.roles.highest.position;
                     const positions = [];
-                    // نبني قائمة بالرتب الجديدة مرتبة تنازلياً حسب position الأصلي
                     const orderedNew = sortedRoles
                         .map(r => roleMap.get(r.id))
                         .filter(Boolean);
-                    // نعطي كل رتبة موقع تحت أعلى رتبة للبوت مباشرة، مع الحفاظ على الترتيب النسبي
                     let pos = Math.max(1, myTop - 1);
                     for (const role of orderedNew) {
                         if (pos < 1) break;
@@ -942,7 +885,6 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // 3. نسخ الكاتيجوريات
             const sortedCats = [...sourceGuild.channels.cache.values()]
                 .filter(c => isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
@@ -961,7 +903,6 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // 4. نسخ القنوات (نصية وصوتية)
             const sortedChannels = [...sourceGuild.channels.cache.values()]
                 .filter(c => !isCategoryChannel(c))
                 .sort((a, b) => a.position - b.position);
@@ -1004,13 +945,11 @@ async function executeAction(guild, channel, action, params, client) {
             return { ok: !errors.length || createdChannels > 0, msg: summary };
         }
 
-        // ────────────────────────────────
-        //  أدوات Webhook، DM، Poll
-        // ────────────────────────────────
+        // ── Webhook, DM, Poll ──
         if (a === 'create_webhook') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
@@ -1043,7 +982,7 @@ async function executeAction(guild, channel, action, params, client) {
             if (!content) return _err('❌ محتوى الرسالة فارغ.');
             let members       = [...guild.members.cache.values()];
             if (roleFilter) {
-                const roleObj = findRole(guild, String(roleFilter));
+                const roleObj = await findRole(guild, String(roleFilter));
                 if (!roleObj) return _err(`❌ ما لقيت الرتبة: **${roleFilter}**`);
                 members = [...roleObj.members.values()];
             }
@@ -1054,7 +993,7 @@ async function executeAction(guild, channel, action, params, client) {
                 try {
                     await mem.send(content.slice(0, 2000));
                     sentCount++;
-                    await new Promise(r => setTimeout(r, 1000)); // تفادي rate limit
+                    await new Promise(r => setTimeout(r, 1000));
                 } catch (_) {
                     failedCount++;
                 }
@@ -1065,7 +1004,7 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'poll') {
             let targetCh = channel;
             if (params.channel) {
-                const found = findChannel(guild, String(params.channel));
+                const found = await findChannel(guild, String(params.channel));
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) {
