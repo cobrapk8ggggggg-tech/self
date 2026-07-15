@@ -136,6 +136,27 @@ function shouldTriggerFalseSuccessGuard(raw, userMsg) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  MEDIA ATTACHMENT HANDLER — إرسال المرفقات إلى القناة
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * يرسل مرفقات AttachmentBuilder إلى القناة ويعيد true إذا نجح
+ * @param {import('discord.js').TextChannel} ch
+ * @param {import('discord.js').AttachmentBuilder[]} attachments
+ * @returns {Promise<boolean>}
+ */
+async function _sendAttachments(ch, attachments) {
+    if (!ch || !attachments || !attachments.length) return false;
+    try {
+        await ch.send({ files: attachments });
+        return true;
+    } catch (e) {
+        console.error('[Agent] فشل إرسال المرفقات:', e.message);
+        return false;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
 //  AGENT LOOP — حلقة الوكيل
 // ══════════════════════════════════════════════════════════════
 
@@ -233,14 +254,13 @@ async function runAgent(
                     result = _err(reason);
                 } else {
                     result = await executeAction(guild, channel, actionName, params, client);
+                    
+                    // ── إرسال المرفقات إذا وجدت (للصور والوسائط) ─ـ
+                    if (result && result.__attachments && Array.isArray(result.__attachments)) {
+                        await _sendAttachments(channel, result.__attachments);
+                    }
                 }
-                // دعم المرفقات العائدة من executeAction (مثل الصور)
-                if (result && result.attachments) {
-                    // لا نضيف نص النتيجة إذا كان الهدف مرفقات فقط
-                    allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify({ ok: result.ok, msg: result.msg })}`);
-                } else {
-                    allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify(result, null, 2)}`);
-                }
+                allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify(result, null, 2)}`);
                 continue;
             }
 
@@ -360,6 +380,10 @@ async function runAgent(
                         case 'get_server_banner':
                         case 'send_image':
                             result = await executeAction(targetGuild, channel, tool, params, client);
+                            // إرسال المرفقات فوراً
+                            if (result && result.__attachments && Array.isArray(result.__attachments)) {
+                                await _sendAttachments(channel, result.__attachments);
+                            }
                             break;
                         default:
                             result = _err(`أداة غير مُنفَّذة: ${tool}`);
