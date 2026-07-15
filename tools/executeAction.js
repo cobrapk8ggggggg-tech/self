@@ -136,6 +136,21 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
+/**
+ * ينظف اسم القناة/الكاتيجوري من الأحرف التي قد تسبب مشاكل في Discord API
+ * مثل رموز اليونيكود الغريبة، مع الحفاظ على الشكل العام للاسم
+ * @param {string} name
+ * @returns {string}
+ */
+function _cleanName(name) {
+    return String(name || '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width spaces
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // control chars
+        .replace(/\s+/g, ' ') // normalize spaces
+        .trim()
+        .slice(0, 100) || 'قناة'; // fallback آمن
+}
+
 function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
     const overwrites = [];
     for (const [, ow] of channel.permissionOverwrites.cache) {
@@ -149,7 +164,6 @@ function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
                 id = mapped.id;
             }
         }
-        // تحويل BigInt إلى string لتجنب مشكلة التسلسل في Discord API
         overwrites.push({
             id,
             allow: String(ow.allow.bitfield),
@@ -173,12 +187,6 @@ function channelTypeForClone(ch, client) {
 //  PARAM HELPER — استخراج المعاملات بمرونة
 // ══════════════════════════════════════════════════════════════
 
-/**
- * يستخرج قيمة معامل من كائن params بمرونة — يجرّب أسماء متعددة.
- * @param {object} params - كائن المعاملات
- * @param  {...string} keys - الأسماء المحتملة للمعامل (الأولوية للأول)
- * @returns {any} قيمة المعامل أو undefined إن لم يوجد
- */
 function getParam(params, ...keys) {
     if (!params || typeof params !== 'object') return undefined;
     for (const k of keys) {
@@ -189,14 +197,6 @@ function getParam(params, ...keys) {
     return undefined;
 }
 
-/**
- * يتحقق من وجود أحد المفاتيح المطلوبة في params.
- * إن لم يوجد أي منها، يرجع رسالة خطأ.
- * @param {object} params
- * @param {string} actionName
- * @param  {...string} keys
- * @returns {{ ok: false, msg: string }|null} يرجع خطأ إن لم يوجد أي مفتاح، وإلا null
- */
 function requireOneParam(params, actionName, ...keys) {
     const val = getParam(params, ...keys);
     if (val === undefined) {
@@ -211,13 +211,10 @@ function requireOneParam(params, actionName, ...keys) {
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
-    // ── معالجة params المغلفة (عندما يرسل AI كائن params داخل params) ──
     if (params && typeof params === 'object' && !params.name && !params.channel && !params.member && !params.role) {
-        // ابحث عن أي مفتاح قيمته كائن (قد يكون params الحقيقي)
         for (const key of Object.keys(params)) {
             if (params[key] && typeof params[key] === 'object' && !Array.isArray(params[key])) {
                 const nested = params[key];
-                // إذا كان الكائن الداخلي يحتوي على مفاتيح معروفة، استخدمه
                 if (nested.name || nested.channel || nested.member || nested.role || nested.content || nested.new_name) {
                     params = nested;
                     break;
@@ -237,7 +234,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ── قنوات ──
+        // ── قنوات ─ـ
         if (a === 'create_category') {
             const nameVal = getParam(params, 'name', 'category_name', 'cat_name');
             if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء كاتيكوري.');
@@ -395,7 +392,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم حذف **${totalDeleted}** رسالة للعضو من **${scannedChannels}** قناة ممكنة.`, { deleted: totalDeleted, channels: scannedChannels, failures: failures.slice(0, 5) });
         }
 
-        // ── رتب ──
+        // ── رتب ─ـ
         if (a === 'create_role') {
             const nameVal = getParam(params, 'name', 'role_name');
             if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء رتبة.');
@@ -536,7 +533,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🤖 تم إعطاء رتبة **${role.name}** إلى **${count}** بوت`);
         }
 
-        // ── أعضاء ──
+        // ── أعضاء ─ـ
         if (a === 'kick_member') {
             const err = requireOneParam(params, 'kick_member', 'member', 'user', 'member_id');
             if (err) return err;
@@ -651,7 +648,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📤 تم فصل **${member.displayName}** من الفويس`);
         }
 
-        // ── رسائل ومنشن ──
+        // ── رسائل ومنشن ─ـ
         if (a === 'send_message') {
             const chVal = getParam(params, 'channel', 'channel_name', 'name');
             let targetCh = channel;
@@ -813,7 +810,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`📌 تم إلغاء تثبيت الرسالة من **#${targetCh.name}**`);
         }
 
-        // ── صلاحيات القنوات ──
+        // ─ـ صلاحيات القنوات ─ـ
         if (a === 'set_channel_permissions') {
             const chVal = getParam(params, 'channel', 'channel_name', 'name');
             if (!chVal) return _err('❌ يلزم تحديد "channel" لتعديل صلاحيات القناة.');
@@ -854,7 +851,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
         }
 
-        // ── ثريد وإعلانات ──
+        // ─ـ ثريد وإعلانات ─ـ
         if (a === 'create_thread') {
             const nameVal = getParam(params, 'name', 'thread_name');
             if (!nameVal) return _err('❌ يلزم تحديد "name" لإنشاء ثريد.');
@@ -1006,7 +1003,7 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`🎮 ${result.msg}`, { games: result.results.map(g => ({ name: g.name, command: g.command })) });
         }
 
-        // ── clone_server (مع دعم تحديد ما تريد نسخه) ──
+        // ─ـ clone_server (مع تنظيف أسماء) ─ـ
         if (a === 'clone_server') {
             let sourceGuild = guild;
             if (params.source_guild) {
@@ -1024,18 +1021,15 @@ async function executeAction(guild, channel, action, params, client) {
                 return _err('❌ المصدر والهدف لا يمكن أن يكونا نفس السيرفر.');
             }
 
-            // ── قراءة خيارات التخصيص (افتراضياً true لنسخ كل شيء) ──
             const includeRoles      = getParam(params, 'include_roles', 'roles') !== false;
             const includeCategories = getParam(params, 'include_categories', 'categories') !== false;
             const includeChannels   = getParam(params, 'include_channels', 'channels') !== false;
-            // includePermissions تابع لـ includeChannels/includeCategories (لا حاجة لتعطيلها منفردة)
 
             let createdRoles = 0, createdCategories = 0, createdChannels = 0;
             const errors     = [];
             const roleMap    = new Map();
             const catMap     = new Map();
 
-            // 1. نسخ الرتب (إذا includeRoles !== false)
             if (includeRoles) {
                 const sortedRoles = [...sourceGuild.roles.cache.values()]
                     .filter(r => r.name !== '@everyone')
@@ -1080,7 +1074,6 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // 2. نسخ الكاتيجوريات (إذا includeCategories !== false)
             if (includeCategories) {
                 const sortedCats = [...sourceGuild.channels.cache.values()]
                     .filter(c => isCategoryChannel(c))
@@ -1088,7 +1081,7 @@ async function executeAction(guild, channel, action, params, client) {
                 for (const cat of sortedCats) {
                     try {
                         const newCat = await target.channels.create({
-                            name: cat.name,
+                            name: _cleanName(cat.name),
                             type: channelTypeForClone(cat, client),
                             permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
                             position: cat.position,
@@ -1101,17 +1094,15 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // 3. نسخ القنوات (إذا includeChannels !== false)
             if (includeChannels) {
                 const sortedChannels = [...sourceGuild.channels.cache.values()]
                     .filter(c => !isCategoryChannel(c))
                     .sort((a, b) => a.position - b.position);
                 for (const ch of sortedChannels) {
                     try {
-                        // إذا الكاتيجوريات غير مشمولة، نضع القناة بدون parent
                         const targetCat = (includeCategories && ch.parentId) ? (catMap.get(ch.parentId) || null) : null;
                         const commonOpts = {
-                            name: ch.name,
+                            name: _cleanName(ch.name),
                             type: channelTypeForClone(ch, client),
                             parent: targetCat,
                             permissionOverwrites: includeRoles ? mapPermissionOverwrites(ch, target, roleMap) : [],
@@ -1137,7 +1128,6 @@ async function executeAction(guild, channel, action, params, client) {
                 }
             }
 
-            // ── بناء ملخص العمليات ──
             const parts = [];
             if (includeRoles) parts.push(`الرتب: ${createdRoles}`);
             if (includeCategories) parts.push(`الكاتيكوريات: ${createdCategories}`);
@@ -1152,7 +1142,7 @@ async function executeAction(guild, channel, action, params, client) {
             return { ok: !errors.length || (createdRoles + createdCategories + createdChannels) > 0, msg: summary };
         }
 
-        // ── Webhook, DM, Poll ──
+        // ─ـ Webhook, DM, Poll ─ـ
         if (a === 'create_webhook') {
             const chVal = getParam(params, 'channel', 'channel_name');
             const nameVal = getParam(params, 'name', 'webhook_name') || 'Disor Webhook';
