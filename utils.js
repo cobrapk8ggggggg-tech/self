@@ -2,7 +2,7 @@
  * utils.js — Disor Bot v7.0 "Ironclad"
  * ═══════════════════════════════════════════════════════════
  * جميع الدوال المساعدة: جلسات DB، القنوات المسموحة،
- * البحث المتدرج، الصلاحيات، DeepSeek API، وبناء سياق البوت
+ * البحث المتدرج (async مع تحديث الكاش)، الصلاحيات، DeepSeek API، وبناء سياق البوت
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -269,32 +269,58 @@ async function set_pow_provider(guildId, provider, agent_id = 'default') {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  Guild Search Helpers — دوال البحث المتدرجة
+//  Guild Search Helpers — دوال البحث المتدرجة (Async مع تحديث الكاش)
 // ══════════════════════════════════════════════════════════════
 
 /**
- * يبحث عن قناة بالـ ID ثم الاسم المطابق ثم الاحتواء
+ * يبحث عن قناة بالـ ID ثم الاسم المطابق ثم الاحتواء.
+ * إذا لم توجد في الكاش، يتم جلب جميع القنوات أولاً إن أمكن.
  * @param {import('discord.js').Guild} guild
  * @param {string} q - الاستعلام (ID أو اسم)
- * @returns {import('discord.js').GuildBasedChannel|null}
+ * @returns {Promise<import('discord.js').GuildBasedChannel|null>}
  */
-function findChannel(guild, q) {
+async function findChannel(guild, q) {
     if (!q) return null;
     const qs = String(q).trim();
-    // بحث بالـ ID
+    
+    // 1. بحث بالـ ID في الكاش
     try {
         const ch = guild.channels.cache.get(qs);
         if (ch) return ch;
     } catch (_) {}
+
+    // 2. محاولة fetch مباشر إذا كان المُدخل يبدو كـ ID (أرقام فقط)
+    if (/^\d{17,20}$/.test(qs)) {
+        try {
+            const fetched = await guild.channels.fetch(qs).catch(() => null);
+            if (fetched) return fetched;
+        } catch (_) {}
+    }
+
     const ql = qs.toLowerCase();
-    // بحث بالاسم المطابق
+    
+    // 3. بحث بالاسم المطابق في الكاش
     for (const ch of guild.channels.cache.values()) {
         if (ch.name.toLowerCase() === ql) return ch;
     }
-    // بحث بالاحتواء
+    // 4. بحث بالاحتواء في الكاش
     for (const ch of guild.channels.cache.values()) {
         if (ch.name.toLowerCase().includes(ql)) return ch;
     }
+
+    // 5. إذا لم نجد، نحدث الكاش (fetch كل القنوات) ثم نعيد البحث
+    try {
+        await guild.channels.fetch();
+        // إعادة البحث بالاسم المطابق
+        for (const ch of guild.channels.cache.values()) {
+            if (ch.name.toLowerCase() === ql) return ch;
+        }
+        // إعادة البحث بالاحتواء
+        for (const ch of guild.channels.cache.values()) {
+            if (ch.name.toLowerCase().includes(ql)) return ch;
+        }
+    } catch (_) {}
+
     return null;
 }
 
@@ -302,23 +328,47 @@ function findChannel(guild, q) {
  * يبحث عن كاتيجوري بالـ ID ثم الاسم
  * @param {import('discord.js').Guild} guild
  * @param {string} q
- * @returns {import('discord.js').CategoryChannel|null}
+ * @returns {Promise<import('discord.js').CategoryChannel|null>}
  */
-function findCategory(guild, q) {
+async function findCategory(guild, q) {
     if (!q) return null;
-    const { ChannelType } = require('discord.js');
     const qs = String(q).trim();
+
+    // 1. بحث بالـ ID في الكاش
     try {
         const ch = guild.channels.cache.get(qs);
         if (ch && isCategoryChannel(ch)) return ch;
     } catch (_) {}
+
+    // 2. محاولة fetch مباشر إذا كان ID
+    if (/^\d{17,20}$/.test(qs)) {
+        try {
+            const fetched = await guild.channels.fetch(qs).catch(() => null);
+            if (fetched && isCategoryChannel(fetched)) return fetched;
+        } catch (_) {}
+    }
+
     const ql = qs.toLowerCase();
+    // 3. بحث بالاسم المطابق
     for (const ch of guild.channels.cache.values()) {
         if (isCategoryChannel(ch) && ch.name.toLowerCase() === ql) return ch;
     }
+    // 4. بحث بالاحتواء
     for (const ch of guild.channels.cache.values()) {
         if (isCategoryChannel(ch) && ch.name.toLowerCase().includes(ql)) return ch;
     }
+
+    // 5. تحديث الكاش وإعادة المحاولة
+    try {
+        await guild.channels.fetch();
+        for (const ch of guild.channels.cache.values()) {
+            if (isCategoryChannel(ch) && ch.name.toLowerCase() === ql) return ch;
+        }
+        for (const ch of guild.channels.cache.values()) {
+            if (isCategoryChannel(ch) && ch.name.toLowerCase().includes(ql)) return ch;
+        }
+    } catch (_) {}
+
     return null;
 }
 
@@ -326,22 +376,47 @@ function findCategory(guild, q) {
  * يبحث عن رتبة بالـ ID ثم الاسم
  * @param {import('discord.js').Guild} guild
  * @param {string} q
- * @returns {import('discord.js').Role|null}
+ * @returns {Promise<import('discord.js').Role|null>}
  */
-function findRole(guild, q) {
+async function findRole(guild, q) {
     if (!q) return null;
     const qs = String(q).trim();
+
+    // 1. بحث بالـ ID في الكاش
     try {
         const r = guild.roles.cache.get(qs);
         if (r) return r;
     } catch (_) {}
+
+    // 2. محاولة fetch مباشر إذا كان ID
+    if (/^\d{17,20}$/.test(qs)) {
+        try {
+            const fetched = await guild.roles.fetch(qs).catch(() => null);
+            if (fetched) return fetched;
+        } catch (_) {}
+    }
+
     const ql = qs.toLowerCase();
+    // 3. بحث بالاسم المطابق
     for (const r of guild.roles.cache.values()) {
         if (r.name.toLowerCase() === ql) return r;
     }
+    // 4. بحث بالاحتواء
     for (const r of guild.roles.cache.values()) {
         if (r.name.toLowerCase().includes(ql)) return r;
     }
+
+    // 5. تحديث الكاش وإعادة المحاولة
+    try {
+        await guild.roles.fetch();
+        for (const r of guild.roles.cache.values()) {
+            if (r.name.toLowerCase() === ql) return r;
+        }
+        for (const r of guild.roles.cache.values()) {
+            if (r.name.toLowerCase().includes(ql)) return r;
+        }
+    } catch (_) {}
+
     return null;
 }
 
@@ -355,14 +430,23 @@ function findRole(guild, q) {
 async function findMember(guild, q, client = null) {
     if (!q) return null;
     const qs = String(q).trim();
-    // بحث بالـ ID
+    
+    // 1. بحث بالـ ID في الكاش
     try {
-        const mid = qs;
-        const m   = guild.members.cache.get(mid);
+        const m = guild.members.cache.get(qs);
         if (m) return m;
     } catch (_) {}
+
+    // 2. محاولة fetch مباشر إذا كان ID
+    if (/^\d{17,20}$/.test(qs)) {
+        try {
+            const fetched = await guild.members.fetch(qs).catch(() => null);
+            if (fetched) return fetched;
+        } catch (_) {}
+    }
+
     const ql = qs.toLowerCase();
-    // بحث بالاسم المطابق (username, nickname, globalName)
+    // 3. بحث بالاسم المطابق (username, nickname, globalName)
     for (const m of guild.members.cache.values()) {
         if (
             m.user.username.toLowerCase() === ql ||
@@ -370,7 +454,7 @@ async function findMember(guild, q, client = null) {
             (m.user.globalName && m.user.globalName.toLowerCase() === ql)
         ) return m;
     }
-    // بحث بالاحتواء
+    // 4. بحث بالاحتواء
     for (const m of guild.members.cache.values()) {
         if (
             m.user.username.toLowerCase().includes(ql) ||
@@ -378,11 +462,26 @@ async function findMember(guild, q, client = null) {
             (m.user.globalName && m.user.globalName.toLowerCase().includes(ql))
         ) return m;
     }
-    // محاولة fetch من Discord مباشرة بالـ ID
+
+    // 5. تحديث الكاش (fetch all members) ثم إعادة البحث
     try {
-        const fetched = await guild.members.fetch(qs);
-        if (fetched) return fetched;
+        await guild.members.fetch();
+        for (const m of guild.members.cache.values()) {
+            if (
+                m.user.username.toLowerCase() === ql ||
+                (m.nickname && m.nickname.toLowerCase() === ql) ||
+                (m.user.globalName && m.user.globalName.toLowerCase() === ql)
+            ) return m;
+        }
+        for (const m of guild.members.cache.values()) {
+            if (
+                m.user.username.toLowerCase().includes(ql) ||
+                (m.nickname && m.nickname.toLowerCase().includes(ql)) ||
+                (m.user.globalName && m.user.globalName.toLowerCase().includes(ql))
+            ) return m;
+        }
     } catch (_) {}
+
     return null;
 }
 
@@ -699,14 +798,11 @@ async function _stream_ds(prompt, guildId, sessionId = null, parentMessageId = n
                             if (ftype === 'RESPONSE') {
                                 fullText += frag.content || '';
                             }
-                            // THINKING/THOUGHT/REASONING — يتجاهلها (تُحذف بـ _strip)
                         }
                     } else if (typeof v === 'string') {
                         fullText += v;
                     }
-                } catch (_) {
-                    // JSON parse error — يتجاهلها
-                }
+                } catch (_) {}
             }
         });
         response.data.on('end', resolve);
@@ -893,7 +989,7 @@ module.exports = {
     get_pow_provider,
     set_pow_provider,
 
-    // Search Helpers
+    // Search Helpers (Async)
     findChannel,
     findCategory,
     findRole,
