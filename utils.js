@@ -899,6 +899,21 @@ async function buildBotContext(client, guild, currentChannel = null, agent_id = 
         );
     }
 
+    // ── قسم إيموجيات السيرفر ─ـ
+    const emojiLines = [];
+    const allEmojis = [...guild.emojis.cache.values()].slice(0, 50);
+    if (allEmojis.length > 0) {
+        emojiLines.push('');
+        emojiLines.push('  [إيموجيات السيرفر المتاحة لك]');
+        emojiLines.push('  (تستطيع استخدام هذه الإيموجيات في ردودك بكتابة <:اسم_الإيموجي:ID_الإيموجي>)');
+        for (const emoji of allEmojis) {
+            const tag = emoji.animated
+                ? `<a:${emoji.name}:${emoji.id}>`
+                : `<:${emoji.name}:${emoji.id}>`;
+            emojiLines.push(`  ${tag} — \`${emoji.name}\` \`${emoji.id}\``);
+        }
+    }
+
     const lines = [
         '══════════════════════════════════',
         '  [معلومات البوت — السياق الكامل]',
@@ -930,6 +945,7 @@ async function buildBotContext(client, guild, currentChannel = null, agent_id = 
         '',
         '  [سيرفرات أخرى البوت موجود فيها]',
         ...(otherGuildsLines.length ? otherGuildsLines : ['  لا يوجد سيرفرات أخرى']),
+        ...emojiLines,
         '══════════════════════════════════',
     ];
     return lines.join('\n');
