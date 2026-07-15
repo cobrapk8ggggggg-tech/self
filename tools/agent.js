@@ -64,15 +64,9 @@ const { executeAction } = require('./executeAction');
 //  JSON EXTRACTION — استخراج JSON من النصوص
 // ══════════════════════════════════════════════════════════════
 
-/**
- * يستخرج JSON objects من النص (نفس منطق Python)
- * @param {string} text
- * @returns {object[]}
- */
 function extractJsonObjects(text) {
     const objects = [];
 
-    // أولاً: استخراج من كتل ```json ... ```
     const codeBlockRegex = /```json\s*([\s\S]*?)```/g;
     let match;
     while ((match = codeBlockRegex.exec(text)) !== null) {
@@ -83,7 +77,6 @@ function extractJsonObjects(text) {
                 objects.push(obj);
             }
         } catch (_) {
-            // محاولة استخراج JSON objects منفردة من الكتلة
             const nestedRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
             let nm;
             while ((nm = nestedRegex.exec(block)) !== null) {
@@ -95,7 +88,6 @@ function extractJsonObjects(text) {
         }
     }
 
-    // ثانياً: استخراج من باقي النص (بعد إزالة كتل الكود)
     const cleaned = text.replace(/```json\s*[\s\S]*?```/g, '');
     const objRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
     let om;
@@ -103,7 +95,6 @@ function extractJsonObjects(text) {
         try {
             const obj = JSON.parse(om[0]);
             if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-                // تجنب التكرار
                 const str = JSON.stringify(obj);
                 if (!objects.some(o => JSON.stringify(o) === str)) {
                     objects.push(obj);
@@ -116,12 +107,9 @@ function extractJsonObjects(text) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  FALSE SUCCESS DETECTION — كشف الادعاء الكاذب بالنجاح
+//  FALSE SUCCESS DETECTION
 // ══════════════════════════════════════════════════════════════
 
-/**
- * كلمات وعبارات تدل على أن النموذج يدّعي النجاح دون استخدام أداة
- */
 const FALSE_SUCCESS_RE = /(تم\s|✅|نفذت|خلصت|سويت|غيرت|حذفت|أنشأت|أضفت|عدلت|أرسلت|ركّلت|بندت|فكّيت|أعطيت|سحبت)/i;
 
 // ══════════════════════════════════════════════════════════════
@@ -130,23 +118,6 @@ const FALSE_SUCCESS_RE = /(تم\s|✅|نفذت|خلصت|سويت|غيرت|حذف
 
 const MAX_STEPS = 24;
 
-/**
- * يشغّل Agent Loop الكامل
- * @param {import('discord.js').Guild} guild
- * @param {import('discord.js').TextChannel} channel
- * @param {string} userMsg
- * @param {string} userInfo
- * @param {string} botContext
- * @param {string} botName
- * @param {string|null} sessionId
- * @param {string|null} parentMessageId
- * @param {string} guildId
- * @param {string} mode
- * @param {boolean} thinking
- * @param {string} accessLevel
- * @param {import('discord.js').Client} client
- * @returns {Promise<{reply: string, newSid: string, newPmid: string|null, filesToSend: string[]}>}
- */
 async function runAgent(
     guild, channel, userMsg, userInfo, botContext, botName,
     sessionId, parentMessageId, guildId,
@@ -189,13 +160,11 @@ async function runAgent(
         let finalReplyText   = null;
 
         for (const obj of jsonObjects) {
-            // ── رد نهائي بدون أداة ──
             if (obj.reply && !obj.tool && !obj.file && !obj.action) {
                 finalReplyText = obj.reply;
                 continue;
             }
 
-            // ── أداة file (الصيغة المباشرة) ──
             if (obj.file && typeof obj.file === 'object' && obj.file.name && obj.file.content) {
                 const safeName = path.basename(obj.file.name) || 'output.txt';
                 try {
@@ -210,7 +179,6 @@ async function runAgent(
                 continue;
             }
 
-            // ── أداة file (عبر tool: "file") ──
             if (obj.tool === 'file') {
                 const p = obj.params || {};
                 if (p.name && p.content) {
@@ -231,7 +199,6 @@ async function runAgent(
             const tool   = obj.tool || '';
             const params = (typeof obj.params === 'object' && obj.params) ? obj.params : {};
 
-            // ── أداة execute ──
             if (tool === 'execute') {
                 const actionName = obj.action || '';
                 const { allowed, reason } = executeAllowedForAccess(actionName, accessLevel, params);
@@ -245,7 +212,6 @@ async function runAgent(
                 continue;
             }
 
-            // ── أدوات القراءة ──
             const readTools = [
                 'get_channels', 'get_categories', 'get_roles', 'get_members', 'server_info', 'list_all_guilds',
                 'get_messages', 'get_audit_log', 'get_invites', 'get_emojis', 'get_stickers', 'get_bans',
@@ -263,7 +229,6 @@ async function runAgent(
                     continue;
                 }
 
-                // دعم target_guild للـ owner فقط
                 let targetGuild = guild;
                 if (params.target_guild) {
                     if (accessLevel !== 'owner') {
@@ -271,7 +236,7 @@ async function runAgent(
                         allResults.push(`[TOOL_RESULT: ${tool}]\n${JSON.stringify(result)}`);
                         continue;
                     }
-                    const foundG = findGuild(client, String(params.target_guild));
+                    const foundG = await findGuild(client, String(params.target_guild));
                     if (foundG) {
                         targetGuild = foundG;
                     } else {
@@ -283,10 +248,10 @@ async function runAgent(
 
                 let result;
                 try {
-                    // تحديد القناة الهدف للأدوات التي تحتاجها
-                    const getTargetCh = () => {
+                    // getTargetCh أصبحت async
+                    const getTargetCh = async () => {
                         if (params.channel) {
-                            const found = findChannel(targetGuild, String(params.channel));
+                            const found = await findChannel(targetGuild, String(params.channel));
                             if (found && isTextChannel(found)) return found;
                         }
                         return channel;
@@ -306,7 +271,7 @@ async function runAgent(
                         case 'list_all_guilds':
                             result = toolListAllGuilds(client); break;
                         case 'get_messages':
-                            result = await toolGetMessages(getTargetCh(), Number(params.limit || 100), params.member_id || null); break;
+                            result = await toolGetMessages(await getTargetCh(), Number(params.limit || 100), params.member_id || null); break;
                         case 'get_audit_log':
                             result = await toolGetAuditLog(targetGuild, Number(params.limit || 20), params.action || null); break;
                         case 'get_invites':
@@ -318,11 +283,11 @@ async function runAgent(
                         case 'get_bans':
                             result = await toolGetBans(targetGuild, Number(params.limit || 100)); break;
                         case 'get_pinned_messages':
-                            result = await toolGetPinnedMessages(getTargetCh()); break;
+                            result = await toolGetPinnedMessages(await getTargetCh()); break;
                         case 'get_voice_states':
                             result = toolGetVoiceStates(targetGuild); break;
                         case 'search_messages':
-                            result = await toolSearchMessages(getTargetCh(), params.query || '', Number(params.limit || 200)); break;
+                            result = await toolSearchMessages(await getTargetCh(), params.query || '', Number(params.limit || 200)); break;
                         case 'moderation_overview':
                             result = toolModerationOverview(targetGuild, client); break;
                         case 'recent_joins':
@@ -346,9 +311,9 @@ async function runAgent(
                         case 'get_member_info':
                             result = await toolGetMemberInfo(targetGuild, String(params.member || '')); break;
                         case 'get_bot_commands':
-                            result = await toolGetBotCommands(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh(), Number(params.limit || 300)); break;
+                            result = await toolGetBotCommands(targetGuild, String(params.bot || params.bot_id || ''), await getTargetCh(), Number(params.limit || 300)); break;
                         case 'analyze_bot':
-                            result = await toolAnalyzeBot(targetGuild, String(params.bot || params.bot_id || ''), getTargetCh()); break;
+                            result = await toolAnalyzeBot(targetGuild, String(params.bot || params.bot_id || ''), await getTargetCh()); break;
                         case 'server_blueprint':
                             result = toolServerBlueprint(targetGuild); break;
                         case 'permission_audit':
@@ -372,7 +337,6 @@ async function runAgent(
             allResults.push(`[UNKNOWN_TOOL: ${tool}]`);
         }
 
-        // ── إذا وجد رد نهائي → نرجعه ──
         if (finalReplyText) {
             return {
                 reply      : finalReplyText,
@@ -382,16 +346,13 @@ async function runAgent(
             };
         }
 
-        // ── إذا لا توجد نتائج أدوات → النص الخام هو الرد ──
         if (!allResults.length) {
-            // 🛡️ Guard: كشف الادعاء الكاذب بالنجاح
-            // إذا كان النص يوحي بتنفيذ إجراء إداري دون أي استدعاء أداة فعلي
             if (FALSE_SUCCESS_RE.test(raw) && step === 0) {
                 curPrompt =
                     `لاحظت أنك كتبت رداً يوحي بتنفيذ إجراء إداري (تغيير/حذف/إنشاء) لكنك لم تستدعِ أي أداة فعلياً. ` +
                     `أنت لا تملك أي قدرة على تنفيذ أي شيء إداري بدون استدعاء أداة execute أو أداة قراءة أولاً. ` +
                     `أعد المحاولة الآن: إذا كان الطلب يحتاج تنفيذاً، استدعِ الأداة المناسبة عبر \`\`\`json فوراً. لا ترد نصياً بأنك نفذت شيئاً لم تنفذه.`;
-                continue; // إعادة الدورة بدون إرجاع الرد الكاذب
+                continue;
             }
 
             return {
@@ -402,7 +363,6 @@ async function runAgent(
             };
         }
 
-        // ── نكمل الحلقة بنتائج الأدوات ──
         const combined = allResults.join('\n');
         curPrompt      = `نتائج الأوامر:\n${combined}\n\nاستمر في التنفيذ أو قدم الرد النهائي.`;
     }
@@ -415,9 +375,6 @@ async function runAgent(
     };
 }
 
-// ══════════════════════════════════════════════════════════════
-//  Exports
-// ══════════════════════════════════════════════════════════════
 module.exports = {
     extractJsonObjects,
     runAgent,
