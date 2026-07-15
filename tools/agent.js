@@ -11,7 +11,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-const { ChannelType } = require('discord.js');
+const { ChannelType, AttachmentBuilder } = require('discord.js');
 const { isTextChannel, isUserRuntime } = require('../discordAdapter');
 
 const {
@@ -127,7 +127,6 @@ function shouldTriggerFalseSuccessGuard(raw, userMsg) {
     if (!FALSE_SUCCESS_RE.test(raw)) return false;
     
     // 2. هل طلب المستخدم الأصلي يوحي بأنه يريد إجراءً إدارياً فعلياً؟
-    // إذا كان المستخدم يسأل فقط ("كيف أقوم بـ...")، فلن نوقف الرد.
     if (!ADMIN_ACTION_REQUEST_RE.test(userMsg)) return false;
     
     // 3. تحقق إضافي: إذا كان النص يحوي علامات استفهام أو كلمات استفسار، فهو شرح على الأغلب.
@@ -235,7 +234,13 @@ async function runAgent(
                 } else {
                     result = await executeAction(guild, channel, actionName, params, client);
                 }
-                allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify(result, null, 2)}`);
+                // دعم المرفقات العائدة من executeAction (مثل الصور)
+                if (result && result.attachments) {
+                    // لا نضيف نص النتيجة إذا كان الهدف مرفقات فقط
+                    allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify({ ok: result.ok, msg: result.msg })}`);
+                } else {
+                    allResults.push(`[TOOL_RESULT: ${actionName}]\n${JSON.stringify(result, null, 2)}`);
+                }
                 continue;
             }
 
@@ -247,6 +252,8 @@ async function runAgent(
                 'get_webhooks', 'get_scheduled_events', 'get_threads', 'get_nitro_boosters',
                 'get_bot_list', 'get_member_info', 'get_bot_commands', 'analyze_bot',
                 'server_blueprint', 'permission_audit', 'channel_activity', 'agent_config_audit',
+                // الأدوات الجديدة (مرفقات)
+                'get_server_icon', 'get_server_banner', 'send_image',
             ];
 
             if (readTools.includes(tool)) {
@@ -348,6 +355,12 @@ async function runAgent(
                             result = await toolChannelActivity(targetGuild, Number(params.limit_per_channel || 50)); break;
                         case 'agent_config_audit':
                             result = await toolAgentConfigAudit(targetGuild, runtime.agentId || 'default'); break;
+                        // الأدوات الجديدة
+                        case 'get_server_icon':
+                        case 'get_server_banner':
+                        case 'send_image':
+                            result = await executeAction(targetGuild, channel, tool, params, client);
+                            break;
                         default:
                             result = _err(`أداة غير مُنفَّذة: ${tool}`);
                     }
@@ -379,7 +392,7 @@ async function runAgent(
                 curPrompt =
                     `لاحظت أنك كتبت رداً يوحي بتنفيذ إجراء إداري (تغيير/حذف/إنشاء) لكنك لم تستدعِ أي أداة فعلياً. ` +
                     `أنت لا تملك أي قدرة على تنفيذ أي شيء إداري بدون استدعاء أداة execute أو أداة قراءة أولاً. ` +
-                    `أعد المحاولة الآن: استدعِ الأداة المناسبة عبر \`\`\`json فوراً. لا ترد نصياً بأنك نفذت شيئاً لم تنفذه. اذا كان مجرد شرح تجاهل كلامي بالكامل واعد كتابة رسالتك السابقة بشكل حرفي.`;
+                    `أعد المحاولة الآن: استدعِ الأداة المناسبة عبر \`\`\`json فوراً. لا ترد نصياً بأنك نفذت شيئاً لم تنفذه.`;
                 continue;
             }
 
