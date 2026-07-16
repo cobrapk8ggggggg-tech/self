@@ -995,38 +995,66 @@ async function executeAction(guild, channel, action, params, client) {
 
         // ─ـ صلاحيات القنوات ─ـ
         if (a === 'set_channel_permissions') {
-            const chVal = getParam(params, 'channel', 'channel_name', 'name');
-            if (!chVal) return _err('❌ يلزم تحديد "channel" لتعديل صلاحيات القناة.');
-            const chObj = await findChannel(guild, String(chVal));
-            if (!chObj) return _err(`❌ ما لقيت القناة: **${chVal}**`);
+    const chVal = getParam(params, 'channel', 'channel_name', 'name');
+    if (!chVal) return _err('❌ يلزم تحديد "channel" لتعديل صلاحيات القناة.');
+    const chObj = await findChannel(guild, String(chVal));
+    if (!chObj) return _err(`❌ ما لقيت القناة: **${chVal}**`);
 
-            let target = null;
-            const roleVal   = getParam(params, 'role', 'role_name');
-            const memberVal = getParam(params, 'member', 'user', 'member_id');
-            if (roleVal) {
-                target = await findRole(guild, String(roleVal));
-                if (!target) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
-            } else if (memberVal) {
-                target = await findMember(guild, String(memberVal), client);
-                if (!target) {
-                    try { target = await guild.members.fetch(String(memberVal).trim()); } catch (_) {
-                        return _err(`❌ ما لقيت العضو: **${memberVal}**`);
-                    }
-                }
-            } else {
-                return _err('❌ حدد role أو member لتعديل صلاحيات القناة.');
-            }
+    let target = null;
+    const roleVal = getParam(params, 'role', 'role_name');
+    const memberVal = getParam(params, 'member', 'user', 'member_id');
 
-            const permMap = getParam(params, 'perms', 'permissions') || {};
-            if (typeof permMap !== 'object') return _err('❌ perms يجب أن يكون كائن {permission: true/false/null}.');
-            const owKwargs = {};
-            for (const [key, val] of Object.entries(permMap)) {
-                owKwargs[key] = val === null ? null : Boolean(val);
-            }
-            await chObj.permissionOverwrites.edit(target, owKwargs);
-            const targetName = target.displayName || target.name || String(target.id);
-            return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
+    // --- الإصلاح 1: التعامل مع @everyone بشكل صحيح ---
+    if (roleVal) {
+        if (roleVal === '@everyone' || roleVal === guild.id) {
+            target = guild.roles.everyone; // الطريقة الصحيحة
+        } else {
+            target = await findRole(guild, String(roleVal));
+            if (!target) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
         }
+    } else if (memberVal) {
+        target = await findMember(guild, String(memberVal), client);
+        if (!target) {
+            try { target = await guild.members.fetch(String(memberVal).trim()); } catch (_) {
+                return _err(`❌ ما لقيت العضو: **${memberVal}**`);
+            }
+        }
+    } else {
+        return _err('❌ حدد role أو member لتعديل صلاحيات القناة.');
+    }
+
+    const permMap = getParam(params, 'perms', 'permissions') || {};
+    if (typeof permMap !== 'object') return _err('❌ perms يجب أن يكون كائن {permission: true/false/null}.');
+
+    // --- الإصلاح 2: تحويل المفاتيح النصية إلى allow/deny الصحيحين ---
+    const allow = [];
+    const deny = [];
+
+    for (const [permName, value] of Object.entries(permMap)) {
+        // البحث عن الصلاحية في PermissionsBitField.Flags
+        const flag = PermissionsBitField.Flags[permName];
+        if (flag === undefined) {
+            console.warn(`[set_channel_permissions] تم تجاهل صلاحية غير معروفة: ${permName}`);
+            continue;
+        }
+
+        if (value === true) {
+            allow.push(flag);
+        } else if (value === false) {
+            deny.push(flag);
+        }
+        // إذا كانت القيمة null، لا نضيفها إلى allow ولا deny -> تصبح محايدة (افتراضي)
+    }
+
+    try {
+        // نطبق التعديل
+        await chObj.permissionOverwrites.edit(target, { allow, deny });
+        const targetName = target.displayName || target.name || String(target.id);
+        return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
+    } catch (e) {
+        return _err(`❌ فشل تعديل صلاحيات القناة: ${e.message}`);
+    }
+}
 
         // ─ـ ثريد وإعلانات ─ـ
         if (a === 'create_thread') {
