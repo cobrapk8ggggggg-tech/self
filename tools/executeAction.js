@@ -144,32 +144,60 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
-// [FIX 1] _cleanName محسّن — يعالج object أو string ويُرجع اسماً نظيفاً يقبله Discord
+// [FIX 1] _cleanName محسّن — يعالج أي شكل من المدخلات ويُخرج string نظيف
 function _cleanName(name) {
+    // إذا كان الإدخال null/undefined نعيد fallback
     if (name === null || name === undefined) return 'channel';
 
-    // إذا كان object (بسبب nested params من الذكاء الاصطناعي)
-    // نحاول نجيب منه خاصية name أو channel_name أو أي خاصية string أولى
+    // إذا كان كائناً (وليس مصفوفة)
     if (typeof name === 'object' && !Array.isArray(name)) {
+        // نحاول استخراج الاسم الحقيقي من الكائن بأي طريقة ممكنة
         const extracted =
-            name.name        ||
-            name.channel_name||
-            name.ch_name     ||
-            name.cat_name    ||
-            name.category_name||
-            name.role_name   ||
-            name.thread_name ||
+            name.name            ||
+            name.channel_name    ||
+            name.ch_name         ||
+            name.cat_name        ||
+            name.category_name   ||
+            name.role_name       ||
+            name.thread_name     ||
+            name.content         ||
+            // لو الكائن هو params كامل (name + type + parent) نأخذ name منه
+            (typeof name.name === 'string' ? name.name : null) ||
             // آخر حل: أول قيمة string في الـ object
             Object.values(name).find(v => typeof v === 'string') ||
             '';
         name = extracted;
     }
 
-    // أي نوع آخر غير متوقع
+    // إذا كان ما زال كائناً (حالة نادرة) نحوله لـ JSON string ثم ننظفه
+    if (typeof name === 'object') {
+        name = String(JSON.stringify(name));
+    }
+
+    // إذا وصلنا هنا والنوع ليس string نحوله إلى string
     if (typeof name !== 'string') {
         name = String(name);
     }
 
+    // محاولة كشف string يمثل كائن (مثل "{'name': 'زيوس', ...}" أو '{"name":"زيوس"}')
+    const trimmed = name.trim();
+    if (/^\{.*\}$/.test(trimmed) || /^\{.*\}$/.test(trimmed.replace(/'/g, '"'))) {
+        try {
+            // نحاول parse كـ JSON مباشرة
+            const parsed = JSON.parse(trimmed.replace(/'/g, '"'));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                // استخرج الاسم من الكائن المعالج
+                const innerName = parsed.name || parsed.channel_name || parsed.ch_name || '';
+                if (typeof innerName === 'string' && innerName.trim()) {
+                    name = innerName;
+                }
+            }
+        } catch (_) {
+            // إذا فشل الـ parse، نستمر بالاسم الحالي وننظفه
+        }
+    }
+
+    // التنظيف النهائي
     return name
         // إزالة Zero-width characters
         .replace(/[\u200B-\u200D\uFEFF]/g, '')
