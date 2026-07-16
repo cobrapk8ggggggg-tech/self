@@ -1,13 +1,14 @@
 /**
- * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [SIMPLIFIED NAME HANDLING]
+ * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [v13‑COMPAT]
  * ═══════════════════════════════════════════════════════════
  * إصلاحات:
- * 1. إزالة التعقيدات من create_channel و create_announcement
- * 2. nested params extraction — يمنع تمرير object بدل string للاسم
- * 3. delete_message / get messages — fetch مع catch صحيح
- * 4. _safePurge user token — تحسين التأخير ومنع التكرار
- * 5. mapPermissionOverwrites — BigInt → Number صحيح
- * 6. findChannel في clear_channel — منع استخدام الاسم كـ ID
+ * 1.  create_channel / create_announcement → صيغة v12/v13 متوافقة
+ * 2.  عدم تمرير null في parent
+ * 3.  nested params extraction — يمنع تمرير object بدل string
+ * 4.  delete_message / get messages — fetch مع catch صحيح
+ * 5.  _safePurge user token — تحسين التأخير ومنع التكرار
+ * 6.  mapPermissionOverwrites — BigInt → Number صحيح
+ * 7.  findChannel في clear_channel — منع استخدام الاسم كـ ID
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -48,7 +49,7 @@ async function safeApiCall(apiCall, maxRetries = 3) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SAFE PURGE — [FIX 3] تحسين user token delay ومنع التكرار
+//  SAFE PURGE
 // ══════════════════════════════════════════════════════════════
 
 async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
@@ -56,7 +57,6 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
     let remaining = limit;
     let beforeId = null;
     const isUserToken = tokenType === 'user';
-    // [FIX 3] زيادة التأخير لـ user token لمنع rate limit
     const deleteDelay = isUserToken ? 1200 : 0;
 
     while (remaining > 0) {
@@ -72,9 +72,8 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
         }
         if (!fetched || !fetched.size) break;
 
-        // [FIX 3] استخدام آخر ID بدل أقدم واحد لضمان عدم التكرار
         const sortedIds = [...fetched.keys()].sort();
-        beforeId = sortedIds[0]; // أصغر ID = الأقدم
+        beforeId = sortedIds[0];
 
         const toDelete = checkFn ? fetched.filter(checkFn) : fetched;
         if (!toDelete.size) {
@@ -144,7 +143,6 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
-// _cleanName ما زالت موجودة لاستخدام clone_server و create_category و rename_channel
 function _cleanName(name) {
     if (name === null || name === undefined) return 'channel';
 
@@ -177,7 +175,6 @@ function _cleanName(name) {
         || 'channel';
 }
 
-// [FIX 5] mapPermissionOverwrites — تحويل BigInt بشكل صحيح
 function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
     const overwrites = [];
     for (const [, ow] of channel.permissionOverwrites.cache) {
@@ -268,7 +265,7 @@ async function executeAction(guild, channel, action, params, client) {
 
         const a = action.toLowerCase().trim();
 
-        // ── أدوات الصور والوسائط ─ـ
+        // ─ـ أدوات الصور والوسائط ─ـ
         if (a === 'get_server_icon') {
             const guildQuery = getParam(params, 'guild', 'guild_id');
             const targetGuild = guildQuery ? (findGuild(client, String(guildQuery)) || guild) : guild;
@@ -319,17 +316,17 @@ async function executeAction(guild, channel, action, params, client) {
             const nameRaw = getParam(params, 'name', 'category_name', 'cat_name');
             if (!nameRaw) return _err('❌ يلزم تحديد "name" لإنشاء كاتيجوري.');
             const nameVal = _cleanName(nameRaw);
-            const cat = await guild.channels.create({
-                name: nameVal,
-                type: channelCreateType('category', tokenType),
-            });
+            const cat = await guild.channels.create(
+                nameVal,
+                { type: channelCreateType('category', tokenType) }
+            );
             return _ok(`✅ تم إنشاء الكاتيجوري **${cat.name}** في **${guild.name}**`);
         }
 
         if (a === 'create_channel') {
             const nameRaw = getParam(params, 'name', 'channel_name', 'ch_name');
             if (!nameRaw) return _err('❌ يلزم تحديد "name" لإنشاء روم.');
-            // ✅ بسيط: لو object خد .name، لو string استخدمه على طول
+            // لو وصل object نأخذ .name، وإلا نستخدمه مباشرة
             const nameVal = typeof nameRaw === 'object' && nameRaw !== null
                 ? String(nameRaw.name || 'channel')
                 : String(nameRaw || 'channel');
@@ -337,11 +334,15 @@ async function executeAction(guild, channel, action, params, client) {
             const catObj  = catVal ? await findCategory(guild, String(catVal)) : null;
             const typeVal = String(getParam(params, 'type', 'channel_type') || 'text').toLowerCase();
             const chType  = channelCreateType(typeVal === 'voice' ? 'voice' : 'text', tokenType);
-            const ch      = await guild.channels.create({
-                name  : nameVal,
-                type  : chType,
-                parent: catObj || null,
-            });
+
+            // ⚡ متوافق مع discord.js-selfbot-v13: اسم أولاً، ثم options
+            const ch = await guild.channels.create(
+                nameVal,
+                {
+                    type: chType,
+                    ...(catObj ? { parent: catObj } : {})   // لا ترسل parent نهائياً إن لم يوجد
+                }
+            );
             const loc = catObj ? ` تحت **${catObj.name}**` : '';
             return _ok(`✅ تم إنشاء الروم **${ch.name}**${loc} في **${guild.name}**`);
         }
@@ -1059,11 +1060,14 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'create_announcement') {
             const nameRaw = getParam(params, 'name', 'channel_name') || 'announcements';
-            // ✅ بسيط: لو object خد .name، لو string استخدمه على طول
             const nameVal = typeof nameRaw === 'object' && nameRaw !== null
                 ? String(nameRaw.name || 'announcements')
                 : String(nameRaw || 'announcements');
-            const ch = await guild.channels.create({ name: nameVal, type: channelCreateType('text', tokenType) });
+            // ⚡ صيغة متوافقة
+            const ch = await guild.channels.create(
+                nameVal,
+                { type: channelCreateType('text', tokenType) }
+            );
             await ch.setTopic(String(getParam(params, 'topic', 'description') || 'قناة إعلانات السيرفر').slice(0, 1024));
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
         }
@@ -1152,12 +1156,14 @@ async function executeAction(guild, channel, action, params, client) {
                     .sort((a, b) => a.position - b.position);
                 for (const cat of sortedCats) {
                     try {
-                        const newCat = await target.channels.create({
-                            name                : _cleanName(cat.name),
-                            type                : channelTypeForClone(cat, client),
-                            permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
-                            position            : cat.position,
-                        });
+                        const newCat = await target.channels.create(
+                            _cleanName(cat.name),
+                            {
+                                type                : channelTypeForClone(cat, client),
+                                permissionOverwrites: mapPermissionOverwrites(cat, target, roleMap),
+                                position            : cat.position,
+                            }
+                        );
                         catMap.set(cat.id, newCat);
                         createdCategories++;
                     } catch (e) {
@@ -1174,9 +1180,8 @@ async function executeAction(guild, channel, action, params, client) {
                     try {
                         const targetCat = (includeCategories && ch.parentId) ? (catMap.get(ch.parentId) || null) : null;
                         const opts = {
-                            name                : _cleanName(ch.name),
                             type                : channelTypeForClone(ch, client),
-                            parent              : targetCat,
+                            parent              : targetCat || undefined,
                             permissionOverwrites: includeRoles ? mapPermissionOverwrites(ch, target, roleMap) : [],
                             position            : ch.position,
                         };
@@ -1192,7 +1197,7 @@ async function executeAction(guild, channel, action, params, client) {
                                 userLimit: ch.userLimit,
                             });
                         }
-                        await target.channels.create(opts);
+                        await target.channels.create(_cleanName(ch.name), opts);
                         createdChannels++;
                     } catch (e) {
                         errors.push(`روم ${ch.name}: ${e.message}`);
