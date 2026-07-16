@@ -394,6 +394,72 @@ async function executeAction(guild, channel, action, params, client) {
             return _ok(`✅ تم نقل الروم **${ch.name}** إلى الكاتيجوري **${cat.name}**`);
         }
 
+        // ═══════════════════════════════════════════════
+        // ✨ أدوات إعادة ترتيب الكاتيجوريات والقنوات (reorder_category / reorder_channel)
+        // ═══════════════════════════════════════════════
+        if (a === 'reorder_category') {
+            const catErr = requireOneParam(params, 'reorder_category', 'category', 'cat_name', 'name');
+            if (catErr) return catErr;
+
+            const catVal = getParam(params, 'category', 'cat_name', 'name');
+            const cat = await findCategory(guild, String(catVal));
+            if (!cat) return _err(`❌ ما لقيت كاتيجوري: **${catVal}**`);
+
+            let newPosition;
+            const absPos = getParam(params, 'position');
+            if (absPos !== undefined && absPos !== null) {
+                newPosition = Number(absPos);
+                if (isNaN(newPosition) || newPosition < 0) return _err('❌ يجب أن تكون position رقماً صحيحاً ≥ 0.');
+            } else {
+                const relativeVal = getParam(params, 'relative_to', 'target');
+                if (!relativeVal) return _err('❌ حدد position أو relative_to لنقل الكاتيجوري.');
+                const above = getParam(params, 'above', 'over') !== false;
+                const relativeCat = await findCategory(guild, String(relativeVal));
+                if (!relativeCat) return _err(`❌ ما لقيت الكاتيجوري النسبية: **${relativeVal}**`);
+                newPosition = above ? relativeCat.position : relativeCat.position + 1;
+            }
+
+            try {
+                await guild.channels.setPosition(cat, newPosition);
+            } catch (e) {
+                return _err(`❌ فشل تعيين ترتيب الكاتيجوري: ${e.message}`);
+            }
+            return _ok(`✅ تم تغيير ترتيب الكاتيجوري **${cat.name}** إلى الموضع **${newPosition}**`);
+        }
+
+        if (a === 'reorder_channel') {
+            const chErr = requireOneParam(params, 'reorder_channel', 'channel', 'name', 'channel_name');
+            if (chErr) return chErr;
+
+            const chVal = getParam(params, 'channel', 'name', 'channel_name');
+            const ch = await findChannel(guild, String(chVal));
+            if (!ch) return _err(`❌ ما لقيت القناة: **${chVal}**`);
+
+            let newPosition;
+            const absPos = getParam(params, 'position');
+            if (absPos !== undefined && absPos !== null) {
+                newPosition = Number(absPos);
+                if (isNaN(newPosition) || newPosition < 0) return _err('❌ يجب أن تكون position رقماً صحيحاً ≥ 0.');
+            } else {
+                const relativeVal = getParam(params, 'relative_to', 'target');
+                if (!relativeVal) return _err('❌ حدد position أو relative_to لنقل القناة.');
+                const above = getParam(params, 'above', 'over') !== false;
+                const relativeCh = await findChannel(guild, String(relativeVal));
+                if (!relativeCh) return _err(`❌ ما لقيت القناة النسبية: **${relativeVal}**`);
+                if (ch.parentId !== relativeCh.parentId) {
+                    return _err('❌ القناة النسبية يجب أن تكون في نفس الكاتيجوري أو خارج الكاتيجوريات.');
+                }
+                newPosition = above ? relativeCh.position : relativeCh.position + 1;
+            }
+
+            try {
+                await ch.setPosition(newPosition);
+            } catch (e) {
+                return _err(`❌ فشل تعيين ترتيب القناة: ${e.message}`);
+            }
+            return _ok(`✅ تم تغيير ترتيب القناة **${ch.name}** إلى الموضع **${newPosition}**`);
+        }
+
         if (a === 'clear_channel') {
             const chVal = getParam(params, 'channel', 'name', 'channel_name');
             let targetCh = null;
