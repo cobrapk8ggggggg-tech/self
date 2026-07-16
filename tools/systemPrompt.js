@@ -145,63 +145,61 @@ ${thinkingNote}
 كلها عبر: {"tool":"execute","action":"اسم_العملية","params":{...}}
 استخدم أي مفتاح من العمود "المفاتيح المقبولة" وسيعمل.
 
-| العملية | المفاتيح المقبولة (استخدم واحداً منها) |
-|---|---|
-| create_category | name |
-| create_channel | name, channel_name |
-| delete_channel | name, channel, channel_name |
-| rename_channel | channel, name, channel_name, + new_name |
-| move_channel | channel, name, channel_name, + category, cat_name, parent |
-| reorder_category | category, cat_name, name, + position, + relative_to, target, + above |
-| reorder_channel | channel, name, channel_name, + position, + relative_to, target, + above |
-| clear_channel | channel, name, channel_name, + limit |
-| delete_member_messages | member, user, member_id, + channel, + limit |
-| delete_member_messages_all_channels | member, user, member_id, + limit_per_channel |
-| create_role | name, role_name, + color, + perms, + position |
-| delete_role | name, role, role_name |
-| edit_role | name, role, role_name, + new_name, + color, + perms |
-| grant_role | member, user, member_id, + role, role_name |
-| revoke_role | member, user, member_id, + role, role_name |
-| set_role_color | role, role_name, + color |
-| set_role_mentionable | role, role_name, + mentionable |
-| remove_role_from_all | role, role_name |
-| add_role_to_bots | role, role_name |
-| kick_member | member, user, member_id, + reason |
-| ban_member | member, user, member_id, + reason |
-| unban_member | user, member, user_id, + reason |
-| timeout_member | member, user, member_id, + minutes, duration, + reason |
-| remove_timeout | member, user, member_id, + reason |
-| change_nickname | member, user, member_id, + nickname, nick, new_nickname |
-| move_member | member, user, member_id, + channel, voice_channel |
-| voice_mute | member, user, member_id, + mute |
-| voice_deafen | member, user, member_id, + deafen |
-| disconnect_member | member, user, member_id |
-| send_message | channel, channel_name, + content, message, text, + reply_to |
-| mention_everyone | channel, channel_name, + content |
-| react_message | channel, channel_name, + message_id, msg_id, + emoji |
-| edit_own_message | channel, channel_name, + message_id, msg_id, + content |
-| delete_message | channel, channel_name, + message_id, msg_id |
-| forward_message | message_id, msg_id, + from_channel, source_channel, + to_channel, target_channel |
-| send_dm | user, member, user_id, + content, message, text |
-| pin_message | channel, channel_name, + message_id, msg_id |
-| unpin_message | channel, channel_name, + message_id, msg_id |
-| set_channel_permissions | channel, channel_name, + role, role_name (أو member, user), + perms, permissions |
-| create_thread | name, thread_name, + channel, channel_name, + auto_archive_duration |
-| slowmode | channel, channel_name, + seconds, duration |
-| lock_channel | channel, channel_name |
-| unlock_channel | channel, channel_name |
-| set_channel_topic | channel, channel_name, + topic |
-| create_invite | channel, channel_name, + max_age, + max_uses |
-| archive_channel | channel, channel_name |
-| nuke_channel | channel, channel_name |
-| create_announcement | name, channel_name, + topic |
-| start_events | channel, + game, game_name, + count, + minutes |
-| clone_server | source_guild, + target_guild, + include_roles, + include_categories, + include_channels |
-| create_webhook | channel, channel_name, + name, webhook_name |
-| send_webhook_message | webhook_url, url, + content, message, text, + username |
-| mass_dm | role, role_name (اختياري), + content, message, text, + limit |
-| poll | channel, channel_name, + question, title, + options, choices |
-| send_image | url, image_url, link, + channel, channel_name, + content, caption, text |
+- **create_category** → المفاتيح المقبولة: name
+- **create_channel** → المفاتيح المقبولة: name, channel_name
+- **delete_channel** → المفاتيح المقبولة: name, channel, channel_name
+- **rename_channel** → المفاتيح المقبولة: channel, name, channel_name, + new_name
+- **move_channel** → المفاتيح المقبولة: channel, name, channel_name, + category, cat_name, parent
+- **reorder_category** → المفاتيح المقبولة: category, cat_name, name, + position, + relative_to, target, + above
+- **reorder_channel** → المفاتيح المقبولة: channel, name, channel_name, + position, + relative_to, target, + above
+- **clear_channel** → المفاتيح المقبولة: channel, name, channel_name, + limit
+- **delete_member_messages** → المفاتيح المقبولة: member, user, member_id, + channel, + limit
+- **delete_member_messages_all_channels** → المفاتيح المقبولة: member, user, member_id, + limit_per_channel
+- **create_role** → المفاتيح المقبولة: name, role_name, + color, + perms, + position
+- **delete_role** → المفاتيح المقبولة: name, role, role_name
+- **edit_role** → المفاتيح المقبولة: name, role, role_name, + new_name, + color, + perms
+- **grant_role** → المفاتيح المقبولة: member, user, member_id, + role, role_name
+- **revoke_role** → المفاتيح المقبولة: member, user, member_id, + role, role_name
+- **set_role_color** → المفاتيح المقبولة: role, role_name, + color
+- **set_role_mentionable** → المفاتيح المقبولة: role, role_name, + mentionable
+- **remove_role_from_all** → المفاتيح المقبولة: role, role_name
+- **add_role_to_bots** → المفاتيح المقبولة: role, role_name
+- **kick_member** → المفاتيح المقبولة: member, user, member_id, + reason
+- **ban_member** → المفاتيح المقبولة: member, user, member_id, + reason
+- **unban_member** → المفاتيح المقبولة: user, member, user_id, + reason
+- **timeout_member** → المفاتيح المقبولة: member, user, member_id, + minutes, duration, + reason
+- **remove_timeout** → المفاتيح المقبولة: member, user, member_id, + reason
+- **change_nickname** → المفاتيح المقبولة: member, user, member_id, + nickname, nick, new_nickname
+- **move_member** → المفاتيح المقبولة: member, user, member_id, + channel, voice_channel
+- **voice_mute** → المفاتيح المقبولة: member, user, member_id, + mute
+- **voice_deafen** → المفاتيح المقبولة: member, user, member_id, + deafen
+- **disconnect_member** → المفاتيح المقبولة: member, user, member_id
+- **send_message** → المفاتيح المقبولة: channel, channel_name, + content, message, text, + reply_to
+- **mention_everyone** → المفاتيح المقبولة: channel, channel_name, + content
+- **react_message** → المفاتيح المقبولة: channel, channel_name, + message_id, msg_id, + emoji
+- **edit_own_message** → المفاتيح المقبولة: channel, channel_name, + message_id, msg_id, + content
+- **delete_message** → المفاتيح المقبولة: channel, channel_name, + message_id, msg_id
+- **forward_message** → المفاتيح المقبولة: message_id, msg_id, + from_channel, source_channel, + to_channel, target_channel
+- **send_dm** → المفاتيح المقبولة: user, member, user_id, + content, message, text
+- **pin_message** → المفاتيح المقبولة: channel, channel_name, + message_id, msg_id
+- **unpin_message** → المفاتيح المقبولة: channel, channel_name, + message_id, msg_id
+- **set_channel_permissions** → المفاتيح المقبولة: channel, channel_name, + role, role_name (أو member, user), + perms, permissions
+- **create_thread** → المفاتيح المقبولة: name, thread_name, + channel, channel_name, + auto_archive_duration
+- **slowmode** → المفاتيح المقبولة: channel, channel_name, + seconds, duration
+- **lock_channel** → المفاتيح المقبولة: channel, channel_name
+- **unlock_channel** → المفاتيح المقبولة: channel, channel_name
+- **set_channel_topic** → المفاتيح المقبولة: channel, channel_name, + topic
+- **create_invite** → المفاتيح المقبولة: channel, channel_name, + max_age, + max_uses
+- **archive_channel** → المفاتيح المقبولة: channel, channel_name
+- **nuke_channel** → المفاتيح المقبولة: channel, channel_name
+- **create_announcement** → المفاتيح المقبولة: name, channel_name, + topic
+- **start_events** → المفاتيح المقبولة: channel, + game, game_name, + count, + minutes
+- **clone_server** → المفاتيح المقبولة: source_guild, + target_guild, + include_roles, + include_categories, + include_channels
+- **create_webhook** → المفاتيح المقبولة: channel, channel_name, + name, webhook_name
+- **send_webhook_message** → المفاتيح المقبولة: webhook_url, url, + content, message, text, + username
+- **mass_dm** → المفاتيح المقبولة: role, role_name (اختياري), + content, message, text, + limit
+- **poll** → المفاتيح المقبولة: channel, channel_name, + question, title, + options, choices
+- **send_image** → المفاتيح المقبولة: url, image_url, link, + channel, channel_name, + content, caption, text
 
 ══════════════════════════════════════════════
 نسخ السيرفرات بمرونة — clone_server
@@ -236,10 +234,18 @@ ${thinkingNote}
 ══════════════════════════════════════════════
 • **bold** | *italic* | __underline__ | ~~strikethrough~~ | \`inline code\`
 • \`\`\`lang\\ncode\\n\`\`\` للكود بلوك
-• > اقتباس | # عنوان | - قائمة | ||سبويلر||
+• > اقتباس | # عنوان | ## عنوان ثانوي | ### عنوان ثالث
+• - قائمة نقطية | 1. قائمة رقمية | - مسافة بادئة لقائمة فرعية
+• ||سبويلر||
 • منشن: <@ID> | @everyone | <@&ROLE_ID> | <#CHANNEL_ID>
 • إيموجي: <:اسم:ID> عادي | <a:اسم:ID> متحرك
-• لا تستخدم HTML أو جداول Markdown.
+• رابط: [نص](رابط) أو <رابط>
+
+**تحذير شديد — ممنوع منعاً باتاً:**
+- لا تستخدم HTML مطلقاً (مثل <b>, <i>, <table>, <tr>, <td>, <div>, <span>).
+- لا تستخدم جداول Markdown مطلقاً (أي شيء يحتوي على | و --- لفصل الرأس عن الجسم).
+- لا تستخدم أي تنسيق غير المذكور أعلاه. حتى لو كان Markdown قياسياً، إذا لم يُذكر هنا فهو غير مدعوم في Discord.
+- لترتيب البيانات استخدم القوائم النقطية (-) أو الرقمية (1.) أو عناوين (#) أو code blocks \`\`\`.
 
 ══════════════════════════════════════════════
 قواعد الردود النهائية
