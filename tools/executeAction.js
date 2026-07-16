@@ -1,6 +1,6 @@
 /**
  * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [v13‑COMPAT]
- * ═══════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════
  * إصلاحات:
  * 1.  create_channel / create_announcement → صيغة v12/v13 متوافقة
  * 2.  عدم تمرير null في parent
@@ -9,7 +9,7 @@
  * 5.  _safePurge user token — تحسين التأخير ومنع التكرار
  * 6.  mapPermissionOverwrites — BigInt → Number صحيح
  * 7.  findChannel في clear_channel — منع استخدام الاسم كـ ID
- * ═══════════════════════════════════════════════════════════
+ * ═══════════════════════════════════════════════════════════════
  */
 
 'use strict';
@@ -370,6 +370,28 @@ async function executeAction(guild, channel, action, params, client) {
             const old = ch.name;
             await ch.edit({ name: newName });
             return _ok(`✅ تم تغيير اسم **${old}** → **${newName}**`);
+        }
+
+        // ═══════════════════════════════════════════════
+        // ✨ أداة نقل قناة إلى كاتيجوري (move_channel)
+        // ═══════════════════════════════════════════════
+        if (a === 'move_channel') {
+            const errCh = requireOneParam(params, 'move_channel', 'channel', 'name', 'channel_name');
+            if (errCh) return errCh;
+            const errCat = requireOneParam(params, 'move_channel', 'category', 'cat_name', 'parent');
+            if (errCat) return errCat;
+
+            const chVal  = getParam(params, 'channel', 'name', 'channel_name');
+            const catVal = getParam(params, 'category', 'cat_name', 'parent');
+
+            const ch = await findChannel(guild, String(chVal));
+            if (!ch) return _err(`❌ ما لقيت روم: **${chVal}**`);
+
+            const cat = await findCategory(guild, String(catVal));
+            if (!cat) return _err(`❌ ما لقيت كاتيجوري: **${catVal}**`);
+
+            await ch.edit({ parent: cat });
+            return _ok(`✅ تم نقل الروم **${ch.name}** إلى الكاتيجوري **${cat.name}**`);
         }
 
         if (a === 'clear_channel') {
