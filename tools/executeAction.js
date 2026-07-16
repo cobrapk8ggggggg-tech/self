@@ -1,4 +1,5 @@
-/**
+
+ /**
  * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [v13‑COMPAT]
  * ═══════════════════════════════════════════════════════════════
  * إصلاحات:
@@ -1001,16 +1002,11 @@ async function executeAction(guild, channel, action, params, client) {
             if (!chObj) return _err(`❌ ما لقيت القناة: **${chVal}**`);
 
             let target = null;
-            const roleVal = getParam(params, 'role', 'role_name');
+            const roleVal   = getParam(params, 'role', 'role_name');
             const memberVal = getParam(params, 'member', 'user', 'member_id');
-
             if (roleVal) {
-                if (roleVal === '@everyone' || roleVal === guild.id) {
-                    target = guild.roles.everyone;
-                } else {
-                    target = await findRole(guild, String(roleVal));
-                    if (!target) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
-                }
+                target = await findRole(guild, String(roleVal));
+                if (!target) return _err(`❌ ما لقيت الرتبة: **${roleVal}**`);
             } else if (memberVal) {
                 target = await findMember(guild, String(memberVal), client);
                 if (!target) {
@@ -1024,33 +1020,13 @@ async function executeAction(guild, channel, action, params, client) {
 
             const permMap = getParam(params, 'perms', 'permissions') || {};
             if (typeof permMap !== 'object') return _err('❌ perms يجب أن يكون كائن {permission: true/false/null}.');
-
-            const allow = [];
-            const deny = [];
-
-            for (const [permName, value] of Object.entries(permMap)) {
-                const flag = PermissionsBitField.Flags[permName];
-                if (flag === undefined) {
-                    console.warn(`[set_channel_permissions] تم تجاهل صلاحية غير معروفة: ${permName}`);
-                    continue;
-                }
-
-                if (value === true) {
-                    allow.push(flag);
-                } else if (value === false) {
-                    deny.push(flag);
-                }
+            const owKwargs = {};
+            for (const [key, val] of Object.entries(permMap)) {
+                owKwargs[key] = val === null ? null : Boolean(val);
             }
-
-            try {
-                const allowBits = allow.length > 0 ? new PermissionsBitField(allow).bitfield : 0n;
-                const denyBits = deny.length > 0 ? new PermissionsBitField(deny).bitfield : 0n;
-                await chObj.permissionOverwrites.edit(target, { allow: allowBits, deny: denyBits });
-                const targetName = target.displayName || target.name || String(target.id);
-                return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
-            } catch (e) {
-                return _err(`❌ فشل تعديل صلاحيات القناة: ${e.message}`);
-            }
+            await chObj.permissionOverwrites.edit(target, owKwargs);
+            const targetName = target.displayName || target.name || String(target.id);
+            return _ok(`✅ تم تعديل صلاحيات **${targetName}** في **#${chObj.name}**`);
         }
 
         // ─ـ ثريد وإعلانات ─ـ
@@ -1097,9 +1073,7 @@ async function executeAction(guild, channel, action, params, client) {
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة لقفلها.');
-            await targetCh.permissionOverwrites.edit(guild.roles.everyone, {
-                SendMessages: false
-            });
+            await targetCh.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
             return _ok(`🔒 تم قفل الكتابة في **#${targetCh.name}**`);
         }
 
@@ -1111,9 +1085,7 @@ async function executeAction(guild, channel, action, params, client) {
                 if (found && isTextChannel(found)) targetCh = found;
             }
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة لفتحها.');
-            await targetCh.permissionOverwrites.edit(guild.roles.everyone, {
-                SendMessages: null
-            });
+            await targetCh.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: null });
             return _ok(`🔓 تم فتح الكتابة في **#${targetCh.name}**`);
         }
 
