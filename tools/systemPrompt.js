@@ -151,6 +151,7 @@ ${thinkingNote}
 | create_channel | name, channel_name |
 | delete_channel | name, channel, channel_name |
 | rename_channel | channel, name, channel_name, + new_name |
+| move_channel | channel, name, channel_name, + category, cat_name, parent |
 | clear_channel | channel, name, channel_name, + limit |
 | delete_member_messages | member, user, member_id, + channel, + limit |
 | delete_member_messages_all_channels | member, user, member_id, + limit_per_channel |
