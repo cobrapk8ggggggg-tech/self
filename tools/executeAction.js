@@ -1,8 +1,8 @@
 /**
- * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [FIXED]
+ * tools/executeAction.js — Disor Bot v7.0 "Ironclad" [SIMPLIFIED NAME HANDLING]
  * ═══════════════════════════════════════════════════════════
  * إصلاحات:
- * 1. _cleanName — يزيل الأحرف غير المقبولة من Discord بشكل صحيح
+ * 1. إزالة التعقيدات من create_channel و create_announcement
  * 2. nested params extraction — يمنع تمرير object بدل string للاسم
  * 3. delete_message / get messages — fetch مع catch صحيح
  * 4. _safePurge user token — تحسين التأخير ومنع التكرار
@@ -144,66 +144,31 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
-// [FIX 1] _cleanName محسّن — يعالج أي شكل من المدخلات ويُخرج string نظيف
+// _cleanName ما زالت موجودة لاستخدام clone_server و create_category و rename_channel
 function _cleanName(name) {
-    // إذا كان الإدخال null/undefined نعيد fallback
     if (name === null || name === undefined) return 'channel';
 
-    // إذا كان كائناً (وليس مصفوفة)
     if (typeof name === 'object' && !Array.isArray(name)) {
-        // نحاول استخراج الاسم الحقيقي من الكائن بأي طريقة ممكنة
         const extracted =
-            name.name            ||
-            name.channel_name    ||
-            name.ch_name         ||
-            name.cat_name        ||
-            name.category_name   ||
-            name.role_name       ||
-            name.thread_name     ||
-            name.content         ||
-            // لو الكائن هو params كامل (name + type + parent) نأخذ name منه
-            (typeof name.name === 'string' ? name.name : null) ||
-            // آخر حل: أول قيمة string في الـ object
+            name.name        ||
+            name.channel_name||
+            name.ch_name     ||
+            name.cat_name    ||
+            name.category_name||
+            name.role_name   ||
+            name.thread_name ||
             Object.values(name).find(v => typeof v === 'string') ||
             '';
         name = extracted;
     }
 
-    // إذا كان ما زال كائناً (حالة نادرة) نحوله لـ JSON string ثم ننظفه
-    if (typeof name === 'object') {
-        name = String(JSON.stringify(name));
-    }
-
-    // إذا وصلنا هنا والنوع ليس string نحوله إلى string
     if (typeof name !== 'string') {
         name = String(name);
     }
 
-    // محاولة كشف string يمثل كائن (مثل "{'name': 'زيوس', ...}" أو '{"name":"زيوس"}')
-    const trimmed = name.trim();
-    if (/^\{.*\}$/.test(trimmed) || /^\{.*\}$/.test(trimmed.replace(/'/g, '"'))) {
-        try {
-            // نحاول parse كـ JSON مباشرة
-            const parsed = JSON.parse(trimmed.replace(/'/g, '"'));
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                // استخرج الاسم من الكائن المعالج
-                const innerName = parsed.name || parsed.channel_name || parsed.ch_name || '';
-                if (typeof innerName === 'string' && innerName.trim()) {
-                    name = innerName;
-                }
-            }
-        } catch (_) {
-            // إذا فشل الـ parse، نستمر بالاسم الحالي وننظفه
-        }
-    }
-
-    // التنظيف النهائي
     return name
-        // إزالة Zero-width characters
         .replace(/[\u200B-\u200D\uFEFF]/g, '')
-        // إزالة control characters
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-        // تنظيف المسافات المتعددة
         .replace(/\s+/g, '-')
         .replace(/-+/g, '-')
         .trim()
@@ -226,7 +191,6 @@ function mapPermissionOverwrites(channel, targetGuild, roleMap = new Map()) {
                 id = mapped.id;
             }
         }
-        // [FIX 5] تحويل BigInt لـ Number بأمان
         const allowBits = ow.allow?.bitfield ?? ow.allow?.valueOf?.() ?? 0n;
         const denyBits  = ow.deny?.bitfield  ?? ow.deny?.valueOf?.()  ?? 0n;
         
@@ -293,40 +257,6 @@ async function _fetchAsAttachment(url, fallbackName = 'image.png') {
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
-    // [FIX 2] تنظيف params — إذا كانت أي قيمة string متوقعة وصلت كـ object، نحوّلها
-    if (params && typeof params === 'object') {
-        // أولاً: إذا كان params كله مغلّف في مستوى إضافي (nested)
-        const topKeys = Object.keys(params);
-        if (topKeys.length === 1 && typeof params[topKeys[0]] === 'object' && !Array.isArray(params[topKeys[0]])) {
-            const inner = params[topKeys[0]];
-            // إذا الـ inner يحتوي على مفاتيح إدارية معروفة، استبدل params به
-            const adminKeys = ['name','channel','member','role','content','new_name','url','message','text'];
-            if (adminKeys.some(k => k in inner)) {
-                params = inner;
-            }
-        }
-
-        // ثانياً: أي قيمة string متوقعة وصلت كـ object → نحوّلها لـ string عبر _cleanName
-        // هذا يحمي من: {"name": {"name": "قناة", "type": "GUILD_TEXT"}}
-        const stringFields = ['name','channel','channel_name','ch_name','category','cat_name',
-                              'category_name','role','role_name','member','user','new_name',
-                              'thread_name','topic','nickname','nick'];
-        for (const field of stringFields) {
-            if (field in params && typeof params[field] === 'object' && params[field] !== null && !Array.isArray(params[field])) {
-                // استخرج الاسم من الـ object
-                const obj = params[field];
-                params[field] =
-                    obj.name         ||
-                    obj.channel_name ||
-                    obj.role_name    ||
-                    obj.member       ||
-                    obj.content      ||
-                    Object.values(obj).find(v => typeof v === 'string') ||
-                    String(JSON.stringify(obj)).slice(0, 100);
-            }
-        }
-    }
-
     const tokenType = client.__agentTokenType || 'bot';
     try {
         if (params.target_guild) {
@@ -388,7 +318,6 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'create_category') {
             const nameRaw = getParam(params, 'name', 'category_name', 'cat_name');
             if (!nameRaw) return _err('❌ يلزم تحديد "name" لإنشاء كاتيجوري.');
-            // [FIX 1+2] تأكد أن الاسم string نظيف
             const nameVal = _cleanName(nameRaw);
             const cat = await guild.channels.create({
                 name: nameVal,
@@ -400,7 +329,10 @@ async function executeAction(guild, channel, action, params, client) {
         if (a === 'create_channel') {
             const nameRaw = getParam(params, 'name', 'channel_name', 'ch_name');
             if (!nameRaw) return _err('❌ يلزم تحديد "name" لإنشاء روم.');
-            const nameVal = _cleanName(nameRaw);
+            // ✅ بسيط: لو object خد .name، لو string استخدمه على طول
+            const nameVal = typeof nameRaw === 'object' && nameRaw !== null
+                ? String(nameRaw.name || 'channel')
+                : String(nameRaw || 'channel');
             const catVal  = getParam(params, 'category', 'parent', 'cat');
             const catObj  = catVal ? await findCategory(guild, String(catVal)) : null;
             const typeVal = String(getParam(params, 'type', 'channel_type') || 'text').toLowerCase();
@@ -444,12 +376,10 @@ async function executeAction(guild, channel, action, params, client) {
             let targetCh = null;
             if (chVal) {
                 const chQ = String(chVal).trim();
-                // [FIX 4] أولاً نبحث بالاسم/ID عبر findChannel
                 const found = await findChannel(guild, chQ);
                 if (found && isTextChannel(found)) {
                     targetCh = found;
                 } else if (/^\d{17,20}$/.test(chQ)) {
-                    // [FIX 4] نستخدم fetch بالـ ID فقط إذا كان رقماً حقيقياً
                     try {
                         const fetched = await client.channels.fetch(chQ);
                         if (fetched && isTextChannel(fetched)) targetCh = fetched;
@@ -487,13 +417,12 @@ async function executeAction(guild, channel, action, params, client) {
             let memberId = member?.id;
 
             if (!memberId) {
-                // إذا كان ID رقمي، جرب fetch مباشر
                 if (/^\d{17,20}$/.test(memberQ)) {
                     try {
                         member   = await guild.members.fetch(memberQ);
                         memberId = member.id;
                     } catch (_) {
-                        memberId = memberQ; // استخدمه كـ ID مباشرة
+                        memberId = memberQ;
                     }
                 } else {
                     return _err(`❌ ما لقيت العضو: **${memberQ}**`);
@@ -832,7 +761,6 @@ async function executeAction(guild, channel, action, params, client) {
             const replyTo = getParam(params, 'reply_to', 'reply_to_message');
             if (replyTo) {
                 const replyId = String(replyTo).trim();
-                // [FIX] استخدام try/catch بدل .catch مباشرة على Promise
                 let ref = null;
                 try { ref = await targetCh.messages.fetch(replyId); } catch (_) {}
                 
@@ -883,7 +811,6 @@ async function executeAction(guild, channel, action, params, client) {
             if (!msgId) return _err('❌ يلزم تحديد "message_id" للتفاعل.');
             const targetCh = chVal ? await findChannel(guild, String(chVal)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
-            // [FIX] try/catch بدل .catch
             let msg = null;
             try { msg = await targetCh.messages.fetch(String(msgId)); } catch (_) {}
             if (!msg) return _err('❌ لم أجد الرسالة.');
@@ -912,7 +839,6 @@ async function executeAction(guild, channel, action, params, client) {
             if (!msgId) return _err('❌ يلزم تحديد "message_id" لحذف الرسالة.');
             const targetCh = chVal ? await findChannel(guild, String(chVal)) : channel;
             if (!targetCh || !isTextChannel(targetCh)) return _err('❌ حدد قناة نصية صحيحة.');
-            // [FIX] try/catch بدل .catch
             let msg = null;
             try { msg = await targetCh.messages.fetch(String(msgId)); } catch (_) {}
             if (!msg) return _err('❌ لم أجد الرسالة.');
@@ -1133,7 +1059,10 @@ async function executeAction(guild, channel, action, params, client) {
 
         if (a === 'create_announcement') {
             const nameRaw = getParam(params, 'name', 'channel_name') || 'announcements';
-            const nameVal = _cleanName(nameRaw);
+            // ✅ بسيط: لو object خد .name، لو string استخدمه على طول
+            const nameVal = typeof nameRaw === 'object' && nameRaw !== null
+                ? String(nameRaw.name || 'announcements')
+                : String(nameRaw || 'announcements');
             const ch = await guild.channels.create({ name: nameVal, type: channelCreateType('text', tokenType) });
             await ch.setTopic(String(getParam(params, 'topic', 'description') || 'قناة إعلانات السيرفر').slice(0, 1024));
             return _ok(`📢 تم إنشاء قناة إعلانات **#${ch.name}**`, { channel_id: ch.id });
