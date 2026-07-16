@@ -144,24 +144,38 @@ async function _safePurge(channel, limit, checkFn = null, tokenType = 'bot') {
 //  clone_server helpers
 // ══════════════════════════════════════════════════════════════
 
-// [FIX 1] _cleanName محسّن — يزيل كل الأحرف غير المقبولة من Discord
+// [FIX 1] _cleanName محسّن — يعالج object أو string ويُرجع اسماً نظيفاً يقبله Discord
 function _cleanName(name) {
     if (name === null || name === undefined) return 'channel';
-    
-    // إذا كان object بسبب خطأ في params، نحوّله لـ string أولاً
-    if (typeof name === 'object') {
-        name = JSON.stringify(name);
+
+    // إذا كان object (بسبب nested params من الذكاء الاصطناعي)
+    // نحاول نجيب منه خاصية name أو channel_name أو أي خاصية string أولى
+    if (typeof name === 'object' && !Array.isArray(name)) {
+        const extracted =
+            name.name        ||
+            name.channel_name||
+            name.ch_name     ||
+            name.cat_name    ||
+            name.category_name||
+            name.role_name   ||
+            name.thread_name ||
+            // آخر حل: أول قيمة string في الـ object
+            Object.values(name).find(v => typeof v === 'string') ||
+            '';
+        name = extracted;
     }
-    
-    return String(name)
+
+    // أي نوع آخر غير متوقع
+    if (typeof name !== 'string') {
+        name = String(name);
+    }
+
+    return name
         // إزالة Zero-width characters
         .replace(/[\u200B-\u200D\uFEFF]/g, '')
         // إزالة control characters
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-        // [FIX 1] إزالة الرموز الخاصة التي يرفضها Discord في أسماء القنوات
-        // Discord يقبل: حروف، أرقام، مسافة، شرطة، شرطة سفلية، نقطة
-        // لكن يرفض: معظم Unicode decorative characters عند تفسيرها
-        .replace(/[^\p{L}\p{N}\p{M}\s\-_.|()\[\]{}'":،,؟?!@#$&*+=/\\٪%^~`؛;]/gu, '')
+        // تنظيف المسافات المتعددة
         .replace(/\s+/g, '-')
         .replace(/-+/g, '-')
         .trim()
@@ -251,20 +265,36 @@ async function _fetchAsAttachment(url, fallbackName = 'image.png') {
 // ══════════════════════════════════════════════════════════════
 
 async function executeAction(guild, channel, action, params, client) {
-    // [FIX 2] nested params extraction — أكثر أماناً، يتحقق أن القيمة string وليست object
+    // [FIX 2] تنظيف params — إذا كانت أي قيمة string متوقعة وصلت كـ object، نحوّلها
     if (params && typeof params === 'object') {
-        const hasTopLevel = ['name','channel','member','role','content','url'].some(
-            k => k in params && params[k] !== undefined && typeof params[k] !== 'object'
-        );
-        if (!hasTopLevel) {
-            for (const key of Object.keys(params)) {
-                if (params[key] && typeof params[key] === 'object' && !Array.isArray(params[key])) {
-                    const nested = params[key];
-                    if (nested.name || nested.channel || nested.member || nested.role || nested.content || nested.new_name) {
-                        params = nested;
-                        break;
-                    }
-                }
+        // أولاً: إذا كان params كله مغلّف في مستوى إضافي (nested)
+        const topKeys = Object.keys(params);
+        if (topKeys.length === 1 && typeof params[topKeys[0]] === 'object' && !Array.isArray(params[topKeys[0]])) {
+            const inner = params[topKeys[0]];
+            // إذا الـ inner يحتوي على مفاتيح إدارية معروفة، استبدل params به
+            const adminKeys = ['name','channel','member','role','content','new_name','url','message','text'];
+            if (adminKeys.some(k => k in inner)) {
+                params = inner;
+            }
+        }
+
+        // ثانياً: أي قيمة string متوقعة وصلت كـ object → نحوّلها لـ string عبر _cleanName
+        // هذا يحمي من: {"name": {"name": "قناة", "type": "GUILD_TEXT"}}
+        const stringFields = ['name','channel','channel_name','ch_name','category','cat_name',
+                              'category_name','role','role_name','member','user','new_name',
+                              'thread_name','topic','nickname','nick'];
+        for (const field of stringFields) {
+            if (field in params && typeof params[field] === 'object' && params[field] !== null && !Array.isArray(params[field])) {
+                // استخرج الاسم من الـ object
+                const obj = params[field];
+                params[field] =
+                    obj.name         ||
+                    obj.channel_name ||
+                    obj.role_name    ||
+                    obj.member       ||
+                    obj.content      ||
+                    Object.values(obj).find(v => typeof v === 'string') ||
+                    String(JSON.stringify(obj)).slice(0, 100);
             }
         }
     }
