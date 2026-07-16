@@ -152,6 +152,8 @@ ${thinkingNote}
 | delete_channel | name, channel, channel_name |
 | rename_channel | channel, name, channel_name, + new_name |
 | move_channel | channel, name, channel_name, + category, cat_name, parent |
+| reorder_category | category, cat_name, name, + position, + relative_to, target, + above |
+| reorder_channel | channel, name, channel_name, + position, + relative_to, target, + above |
 | clear_channel | channel, name, channel_name, + limit |
 | delete_member_messages | member, user, member_id, + channel, + limit |
 | delete_member_messages_all_channels | member, user, member_id, + limit_per_channel |
