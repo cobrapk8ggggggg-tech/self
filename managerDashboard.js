@@ -400,13 +400,44 @@ function safeModalValue(value, max) {
     return String(value || '').slice(0, max);
 }
 
-function conversationCreateModal(agentId) {
-    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:conversation_create_modal:${agentId}`).setTitle('إنشاء محادثة وكيل');
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel_id').setLabel('ID القناة').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('الوضع: default أو expert').setStyle(TextInputStyle.Short).setRequired(false).setValue('default')),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('thinking').setLabel('التفكير: on أو off').setStyle(TextInputStyle.Short).setRequired(false).setValue('off')),
-    );
+function conversationCreateModal(agentId, provider = 'deepseek') {
+    const modal = new ModalBuilder()
+        .setCustomId(`${DASH_PREFIX}:conversation_create_modal:${agentId}`)
+        .setTitle('إنشاء محادثة وكيل');
+    
+    const components = [
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('channel_id')
+                .setLabel('ID القناة')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+        ),
+    ];
+    
+    // Qwen لا يحتاج وضع أو thinking - DeepSeek فقط
+    if (provider === 'deepseek') {
+        components.push(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('mode')
+                    .setLabel('الوضع: default أو expert')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+                    .setValue('default')
+            ),
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('thinking')
+                    .setLabel('التفكير: on أو off')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+                    .setValue('off')
+            )
+        );
+    }
+    
+    modal.addComponents(...components);
     return modal;
 }
 
@@ -1048,12 +1079,24 @@ async function handleDashboardInteraction(interaction, manager) {
 
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:conversation_create_modal:`)) {
         const agentId = parts[2];
+        const cfg = require('./config');
+        const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+        const provider = agent?.model_config?.provider || 'deepseek';
+        
         const { db_save_channel_session } = require('./utils');
         const channelId = interaction.fields.getTextInputValue('channel_id').replace(/\D/g, '');
-        const modeRaw = interaction.fields.getTextInputValue('mode') || 'default';
-        const mode = modeRaw.toLowerCase().includes('expert') ? 'expert' : 'default';
-        const thinkingRaw = interaction.fields.getTextInputValue('thinking') || 'off';
-        const thinking = /^on|true|yes|1|مفعل/i.test(thinkingRaw);
+        
+        // Qwen لا يحتاج mode/thinking - نستخدم قيم افتراضية
+        let mode = 'default';
+        let thinking = false;
+        
+        if (provider === 'deepseek') {
+            const modeRaw = interaction.fields.getTextInputValue('mode') || 'default';
+            mode = modeRaw.toLowerCase().includes('expert') ? 'expert' : 'default';
+            const thinkingRaw = interaction.fields.getTextInputValue('thinking') || 'off';
+            thinking = /^on|true|yes|1|مفعل/i.test(thinkingRaw);
+        }
+        
         if (!channelId) {
             await interaction.reply({ content: '❌ اكتب ID قناة صحيح.', ephemeral: true });
             return true;
@@ -1061,7 +1104,7 @@ async function handleDashboardInteraction(interaction, manager) {
         await db_save_channel_session(interaction.guildId, channelId, null, null, mode, thinking, agentId);
         const runtime = manager?.runtimes?.get?.(String(agentId));
         runtime?.channel_sessions?.set?.(`${interaction.guildId}_${channelId}`, { session_id: null, parent_message_id: null, mode, thinking });
-        await manager.logAgent(agentId, 'conversation_create', 'تم إنشاء محادثة قناة من Dashboard', { channel_id: channelId, mode, thinking });
+        await manager.logAgent(agentId, 'conversation_create', 'تم إنشاء محادثة قناة من Dashboard', { channel_id: channelId, mode, thinking, provider });
         await interaction.reply(await renderAgentConversations(agentId, interaction.guildId));
         return true;
     }
@@ -1160,7 +1203,12 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
         if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
         if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
-        if (action === 'conversation_create') { await interaction.showModal(conversationCreateModal(agentId)); return true; }
+        if (action === 'conversation_create') { 
+            const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+            const provider = agent?.model_config?.provider || 'deepseek';
+            await interaction.showModal(conversationCreateModal(agentId, provider)); 
+            return true; 
+}
         if (action === 'account_run') {
             await interaction.showModal(accountRunModal(agentId));
             return true;
