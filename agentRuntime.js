@@ -238,28 +238,46 @@ const agentName = agentConfig.name || agentId;
 const tokenType = normalizeTokenType(agentConfig.token_type || agentConfig.tokenType || 'bot');
 const discordToken = agentConfig.discord_token || agentConfig.discordToken;
 
-// دعم modelConfig الجديد مع التوافق الرجعي لـ deepseek_token
+// دعم modelConfig الجديد مع التوافق الرجعي لـ deepseek_token و qwen_auth_token
 let modelConfig = agentConfig.model_config || agentConfig.modelConfig;
 let deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
 
-// تحويل legacy deepseek_token إلى modelConfig إذا لم يكن modelConfig موجوداً
-if (!modelConfig && deepseekToken) {
-    console.log('[AgentRuntime] Converting legacy deepseek_token to modelConfig for agent:', agentId);
-    modelConfig = {
-        provider: 'deepseek',
-        model: 'default',
-        credentials: {
-            token: deepseekToken,
-        }
-    };
-} else if (modelConfig && !modelConfig.credentials && deepseekToken) {
-    // إضافة deepseekToken إلى credentials إذا كان فارغاً
-    modelConfig.credentials = { token: deepseekToken };
+// تحويل legacy tokens إلى modelConfig إذا لم يكن modelConfig موجوداً
+if (!modelConfig) {
+    if (deepseekToken) {
+        console.log('[AgentRuntime] Converting legacy deepseek_token to modelConfig for agent:', agentId);
+        modelConfig = {
+            provider: 'deepseek',
+            model: 'default',
+            credentials: {
+                token: deepseekToken,
+            }
+        };
+    } else if (agentConfig.qwen_auth_token || agentConfig.qwenAuthToken) {
+        console.log('[AgentRuntime] Converting legacy qwen_auth_token to modelConfig for agent:', agentId);
+        const qwenAuthToken = agentConfig.qwen_auth_token || agentConfig.qwenAuthToken;
+        modelConfig = {
+            provider: 'qwen',
+            model: 'qwen3.8-max',
+            credentials: {
+                auth_token: qwenAuthToken,
+            }
+        };
+    }
+} else if (modelConfig && !modelConfig.credentials) {
+    // إضافة credentials إذا كانت فارغة
+    if (deepseekToken) {
+        modelConfig.credentials = { token: deepseekToken };
+    } else if (agentConfig.qwen_auth_token || agentConfig.qwenAuthToken) {
+        modelConfig.credentials = { 
+            auth_token: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken 
+        };
+    }
 }
 
 // التحقق من وجود مزود صالح
 if (!modelConfig || !modelConfig.provider) {
-    throw new Error('model_config أو deepseek_token مفقود لهذا الوكيل');
+    throw new Error('model_config أو deepseek_token أو qwen_auth_token مفقود لهذا الوكيل');
 }
 
 // استخراج deepseekToken للتوافق مع الكود القديم (سيتم إزالته مستقبلاً)

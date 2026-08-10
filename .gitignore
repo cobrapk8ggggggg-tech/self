@@ -1,1 +1,1 @@
-Nothing needs to be added to .gitignore since only a JavaScript source file (providers/qwen.js) was modified and no build artifacts, dependencies, or temporary files were detected in the changes.
+Nothing needs to be added to .gitignore since only JavaScript source files (.js) were modified and no build artifacts, dependencies, or temporary files are present in the changes.

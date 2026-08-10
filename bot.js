@@ -215,27 +215,38 @@ async function retireLegacyDefaultAgents() {
     );
 }
 
-async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot', model_config }) {
+async function createAgent({ name, discord_token, deepseek_token, qwen_auth_token, personality = '', token_type = 'bot', model_config }) {
     const cfg = require('./config');
     
-    // دعم model_config الجديد مع التوافق الرجعي لـ deepseek_token
+    // دعم model_config الجديد مع التوافق الرجعي لـ deepseek_token و qwen_auth_token
     let finalModelConfig = model_config;
     
-    // إذا لم يكن model_config موجوداً ولكن deepseek_token موجود، حوّله
-    if (!finalModelConfig && deepseek_token) {
-        finalModelConfig = {
-            provider: 'deepseek',
-            model: 'default',
-            credentials: {
-                token: deepseek_token,
-            }
-        };
+    // إذا لم يكن model_config موجوداً، نحاول تحويل legacy tokens
+    if (!finalModelConfig) {
+        if (deepseek_token) {
+            finalModelConfig = {
+                provider: 'deepseek',
+                model: 'default',
+                credentials: {
+                    token: deepseek_token,
+                }
+            };
+        } else if (qwen_auth_token) {
+            finalModelConfig = {
+                provider: 'qwen',
+                model: 'qwen3.8-max',
+                credentials: {
+                    auth_token: qwen_auth_token,
+                }
+            };
+        }
     }
     
     const doc = { 
         name, 
         discord_token, 
-        deepseek_token, // الاحتفاظ بالحقل القديم للتوافق الرجعي
+        deepseek_token: deepseek_token || null, // الاحتفاظ بالحقل القديم للتوافق الرجعي
+        qwen_auth_token: qwen_auth_token || null, // حقل Qwen الجديد
         model_config: finalModelConfig, // الحقل الجديد الأساسي
         personality, 
         token_type, 
