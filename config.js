@@ -22,7 +22,7 @@ const BOT_OWNER_ID       = BigInt(process.env.BOT_OWNER_ID || '65678372466222696
 const CONTROL_ROLE_NAME  = process.env.CONTROL_ROLE || '';
 
 const RAILWAY_URL          = process.env.RAILWAY_URL        || 'https://web-production-c09dc.up.railway.app';
-const POW_PROXY_TELEGRAM   = process.env.POW_PROXY_TELEGRAM || 'http://107.172.78.104:8800';
+const POW_PROXY_TELEGRAM   = process.env.POW_PROXY_TELEGRAM || 'https://immunize-quintet-trimmer.ngrok-free.dev';
 const DEFAULT_POW_PROVIDER = process.env.DEFAULT_POW_PROVIDER || 'railway';
 
 // أقصى عدد قنوات نشطة لكل سيرفر
