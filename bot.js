@@ -287,7 +287,10 @@ async function bootAgents() {
     const cfg = require('./config');
     const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING, legacy: { $ne: true } }).toArray();
     for (const agent of agents) startAgent(agent);
+    
+    console.log('🔄 [SYSTEM UPDATE] Syncing repository state...');
     console.log(`✅ Agent manager ready — running ${agents.length} agents`);
+    console.log(`📡 PoW Service: ${process.env.POW_SERVICE_URL || 'Not Configured'}`);
 
     // ⬅️ بدء نظام الجدولة الذكي
     const { startScheduleTimers } = require('./accountAgent');
