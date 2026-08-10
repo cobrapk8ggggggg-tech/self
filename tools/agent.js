@@ -18,8 +18,8 @@ const {
     _err,
     findChannel, findGuild,
     toolAllowedForAccess, executeAllowedForAccess,
-    _stream_ds,
 } = require('../utils');
+const modelProvider = require('../providers');
 
 const { buildSystem } = require('./systemPrompt');
 
@@ -186,10 +186,11 @@ async function runAgent(
 
         let raw;
         try {
-            const dsResult = await _stream_ds(curPrompt, guildId, curSid, curPmid, mode, thinking, runtime.deepseekToken, runtime.agentId || 'default');
-            raw     = dsResult.fullText;
-            curSid  = dsResult.sessionId;
-            curPmid = dsResult.newParentMessageId;
+            const modelConfig = runtime.modelConfig || { provider: 'deepseek', model: mode, credentials: { token: runtime.deepseekToken } };
+            const providerResult = await modelProvider.chat(modelConfig, curPrompt, { guildId, sessionId: curSid, parentId: curPmid, thinking, mode, agentId: runtime.agentId || 'default' });
+            raw     = providerResult.fullText;
+            curSid  = providerResult.sessionId;
+            curPmid = providerResult.parentMessageId;
         } catch (e) {
             return {
                 reply      : `⚠️ خطأ في الاتصال بالنموذج: ${e.message}`,

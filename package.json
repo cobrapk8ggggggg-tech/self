@@ -7,7 +7,7 @@
     "start": "node bot.js",
     "dev": "node bot.js",
     "update": "npm update",
-    "test": "node --check config.js && node --check discordAdapter.js && node --check managerDashboard.js && node --check agentRuntime.js && node --check bot.js && node --check utils.js && node --check tools/index.js && node --check tools/agent.js && node --check tools/systemPrompt.js && node --check tools/readTools.js && node --check tools/executeAction.js && node --check accountAgent.js"
+    "test": "node --check config.js && node --check discordAdapter.js && node --check managerDashboard.js && node --check agentRuntime.js && node --check bot.js && node --check utils.js && node --check tools/index.js && node --check tools/agent.js && node --check tools/systemPrompt.js && node --check tools/readTools.js && node --check tools/executeAction.js && node --check accountAgent.js && node --check providers/index.js && node --check providers/deepseek.js && node --check providers/qwen.js"
   },
   "dependencies": {
     "discord.js": ">=14.0.0",

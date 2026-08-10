@@ -134,8 +134,19 @@ async function scheduleReconnect(agentId, reason = 'unexpected disconnect') {
     reconnectTimers.set(id, timer);
 }
 
+
+function normalizeModelConfig(agent = {}) {
+    if (agent.model_config || agent.modelConfig) return agent.model_config || agent.modelConfig;
+    const token = agent.deepseek_token || agent.deepseekToken;
+    return token ? { provider: 'deepseek', model: 'default', credentials: { token } } : null;
+}
+
 async function startAgent(agent) {
     const id = String(agent._id || agent.id || 'default');
+    agent.model_config = normalizeModelConfig(agent);
+    if (!agent.model_config) throw new Error('model_config/deepseek_token مفقود لهذا الوكيل');
+    if (!agent.model_config.provider) agent.model_config.provider = 'deepseek';
+    if (!agent.model_config.credentials) agent.model_config.credentials = {};
     if (runtimes.has(id)) return runtimes.get(id);
     try {
         await setAgentStatus(id, LIFECYCLE.STARTING);
@@ -208,9 +219,10 @@ async function retireLegacyDefaultAgents() {
     );
 }
 
-async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot' }) {
+async function createAgent({ name, discord_token, deepseek_token, model_config, model_provider, model_credentials, personality = '', token_type = 'bot' }) {
     const cfg = require('./config');
-    const doc = { name, discord_token, deepseek_token, personality, token_type, status: LIFECYCLE.STOPPED, created_at: new Date(), updated_at: new Date() };
+    const resolvedModelConfig = model_config || (model_provider ? { provider: model_provider, model: model_provider === 'qwen' ? 'qwen3.8-max' : 'default', credentials: model_credentials || {} } : (deepseek_token ? { provider: 'deepseek', model: 'default', credentials: { token: deepseek_token } } : null));
+    const doc = { name, discord_token, deepseek_token, model_config: resolvedModelConfig, personality, token_type, status: LIFECYCLE.STOPPED, created_at: new Date(), updated_at: new Date() };
     const res = await cfg.agents_col.insertOne(doc);
     return { ...doc, _id: res.insertedId };
 }
@@ -260,7 +272,15 @@ async function bootAgents() {
     await startManagerBot();
     const cfg = require('./config');
     const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING, legacy: { $ne: true } }).toArray();
-    for (const agent of agents) startAgent(agent);
+    for (const agent of agents) {
+        const model_config = normalizeModelConfig(agent);
+        if (!agent.model_config && model_config) {
+            await cfg.agents_col.updateOne({ _id: agent._id }, { $set: { model_config, updated_at: new Date() } });
+            agent.model_config = model_config;
+            console.log(`[Agent ${agent._id}] migrated deepseek_token -> model_config`);
+        }
+        startAgent(agent);
+    }
     console.log(`✅ Agent manager ready — running ${agents.length} agents`);
 
     // ⬅️ بدء نظام الجدولة الذكي
@@ -275,6 +295,7 @@ module.exports = {
     stopAgent,
     restartAgent,
     createAgent,
+    normalizeModelConfig,
     deleteAgent,
     setAgentStatus,
     logAgent,
