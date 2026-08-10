@@ -17,6 +17,7 @@ const MONGODB_URI        = process.env.MONGODB_URI;
 const DISCORD_TOKEN      = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN;
 const USER_TOKEN         = process.env.USER_TOKEN;
 const DEEPSEEK_TOKEN     = process.env.DEEPSEEK_TOKEN;
+const QWEN_BASE_URL      = process.env.QWEN_BASE_URL || 'https://chat.qwen.ai';
 
 const BOT_OWNER_ID       = BigInt(process.env.BOT_OWNER_ID || '656783724662226963');
 const CONTROL_ROLE_NAME  = process.env.CONTROL_ROLE || '';
@@ -153,6 +154,7 @@ module.exports = {
     DISCORD_TOKEN,
     USER_TOKEN,
     DEEPSEEK_TOKEN,
+    QWEN_BASE_URL,
     BOT_OWNER_ID,
     CONTROL_ROLE_NAME,
     RAILWAY_URL,

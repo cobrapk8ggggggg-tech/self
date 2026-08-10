@@ -238,8 +238,9 @@ const agentName = agentConfig.name || agentId;
 const tokenType = normalizeTokenType(agentConfig.token_type || agentConfig.tokenType || 'bot');
 const discordToken = agentConfig.discord_token || agentConfig.discordToken;
 const deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
+const modelConfig = agentConfig.model_config || agentConfig.modelConfig || (deepseekToken ? { provider: 'deepseek', model: 'default', credentials: { token: deepseekToken } } : null);
 if (!discordToken) throw new Error('discord_token مفقود لهذا الوكيل');
-if (!deepseekToken) throw new Error('deepseek_token مفقود لهذا الوكيل');
+if (!modelConfig?.credentials) throw new Error('model_config مفقود لهذا الوكيل');
 const personality = agentConfig.personality || '';
 const channel_sessions = new Map();
 const allowed_channels_cache = new Map();
@@ -252,7 +253,7 @@ client.__agentId = agentId;
 // ══════════════════════════════════════════════════════════════
 //  حدث READY
 // ══════════════════════════════════════════════════════════════
-client.once('ready', async () => {
+client.once(client.__selfbotRuntime ? 'ready' : 'clientReady', async () => {
 
     const botName = client.user.displayName || client.user.username;
     console.log(`✅ ${botName} (${client.user.id}) ready`);
@@ -284,7 +285,7 @@ client.once('ready', async () => {
 //  حدث INTERACTION (للأوامر + Autocomplete)
 // ══════════════════════════════════════════════════════════════
 client.on('interactionCreate', async (interaction) => {
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    const runtimeContext = { agentId, allowed_channels_cache, modelConfig, deepseekToken, personality };
     if (interaction.customId?.startsWith?.('acct:')) {
         if (await handleAccountInteraction(client, interaction, runtimeContext).catch((e) => { console.error('[Account Interaction]', e); return false; })) return;
     }
@@ -552,7 +553,7 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply({ ephemeral: true }).catch(() => {});
             const count = interaction.options.getInteger('عدد') || null;
             const minutes = interaction.options.getInteger('دقائق') || null;
-            const result = await runEventSeries(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality }, { gameName: interaction.options.getString('game'), count: count || 1, minutes: minutes || 0, first: true });
+            const result = await runEventSeries(client, guild, interaction.channel, { agentId, allowed_channels_cache, modelConfig, deepseekToken, personality }, { gameName: interaction.options.getString('game'), count: count || 1, minutes: minutes || 0, first: true });
             const names = result.results.map(g => g.name).join('، ') || '—';
             await interaction.editReply({ content: `${result.ok ? '✅' : '⚠️'} ${result.msg} الألعاب: **${names}**.` }).catch(() => {});
         }
@@ -560,6 +561,11 @@ client.on('interactionCreate', async (interaction) => {
         else if (commandName === 'مزود-باو') {
             if (!member.permissions.has('Administrator')) {
                 await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
+                return;
+            }
+            const aiProvider = modelConfig?.provider || 'deepseek';
+            if (aiProvider !== 'deepseek') {
+                await interaction.reply({ content: `ℹ️ مزود ${aiProvider} لا يستخدم POW، لذلك لا يوجد شيء لتغييره.` });
                 return;
             }
             const provider = interaction.options.getString('provider', true);
@@ -586,7 +592,7 @@ client.on('messageCreate', async (message) => {
     // تجاهل رسائل الحساب نفسه
     if (message.author.id === client.user.id) return;
 
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    const runtimeContext = { agentId, allowed_channels_cache, modelConfig, deepseekToken, personality };
     if (await handleControlReply(client, message, runtimeContext).catch(() => false)) return;
 
     // رسائل الخاص للحساب الحقيقي تُحوّل إلى قناة التحكم المحددة.
@@ -720,6 +726,7 @@ client.on('messageCreate', async (message) => {
     const botName = tokenType === 'user' ? humanizeDisplayName(client.user.displayName || client.user.username) : (client.user.displayName || client.user.username);
     const mode = cs.mode || 'default';
     const thinking = cs.thinking || false;
+    const providerOptions = cs.provider_options || {};
 
     try {
         await message.react('⏳');
@@ -743,7 +750,7 @@ client.on('messageCreate', async (message) => {
             thinking,
             accessLevel,
             client,
-            { deepseekToken, personality, agentId },
+            { modelConfig, deepseekToken, personality, agentId, search: providerOptions.search },
         );
 
         // تحديث الجلسة في RAM و DB
@@ -762,6 +769,7 @@ client.on('messageCreate', async (message) => {
                 mode,
                 thinking,
                 agentId,
+                providerOptions,
             );
         }
 

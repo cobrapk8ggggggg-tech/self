@@ -18,6 +18,7 @@ const {
 
 const DASH_PREFIX = 'dash';
 const PAGE_SIZE = 25;
+const { listProviders, getProviderMeta } = require('./providers');
 
 const COLORS = Object.freeze({
     primary: 0x5865F2,
@@ -269,7 +270,7 @@ async function renderAgent(manager, agentId) {
         `📌 **النوع:** ${tokenTypeLabel(agent)}`,
         `${statusIcon(status)} **الحالة:** ${status}`,
         `🧩 **Runtime:** ${running ? 'متصل ونشط' : 'غير نشط'}`,
-        `🧠 **DeepSeek Token:** ${agent.deepseek_token ? 'موجود' : 'مفقود'}`,
+        `🧠 **AI Provider:** ${(agent.model_config?.provider || (agent.deepseek_token ? 'deepseek' : 'غير محدد'))} / ${(agent.model_config?.model || 'default')}`,
         `🎭 **الشخصية:** ${agent.personality ? trim(agent.personality, 120) : 'افتراضية'}`,
         `🔔 **قناة إشعارات الوكيل:** ${agent.notification_channel_id ? `<#${agent.notification_channel_id}>` : 'غير محددة'}`,
         `🕒 **آخر تحديث:** ${fmtDate(agent.updated_at)}`,
@@ -286,7 +287,7 @@ async function renderAgent(manager, agentId) {
         button(`${DASH_PREFIX}:agent:${id}:edit`, 'تعديل', ButtonStyle.Secondary, '✏️'),
         button(`${DASH_PREFIX}:agent:${id}:channels`, 'القنوات', ButtonStyle.Secondary, '📡'),
         button(`${DASH_PREFIX}:agent:${id}:conversations`, 'المحادثات', ButtonStyle.Secondary, '💬'),
-        button(`${DASH_PREFIX}:agent:${id}:provider`, 'مزود POW', ButtonStyle.Secondary, '⚡'),
+        ...((agent.model_config?.provider || (agent.deepseek_token ? 'deepseek' : 'deepseek')) === 'deepseek' ? [button(`${DASH_PREFIX}:agent:${id}:provider`, 'مزود POW', ButtonStyle.Secondary, '⚡')] : []),
         button(`${DASH_PREFIX}:agent:${id}:account`, 'الحساب والفعاليات', ButtonStyle.Secondary, '👤'),
         button(`${DASH_PREFIX}:agent:${id}:notify`, 'الإشعارات', ButtonStyle.Secondary, '🔔'),
         button(`${DASH_PREFIX}:agent:${id}:logs:0`, 'Timeline', ButtonStyle.Secondary, '📜'),
@@ -315,12 +316,31 @@ function createTypeView() {
     return { embeds: [emb], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:home`, 'إلغاء والعودة', ButtonStyle.Secondary, ICONS.back)])] };
 }
 
-function createAgentModal(type) {
-    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:create_modal:${type}`).setTitle(type === 'user' ? 'إنشاء User Account Runtime' : 'إنشاء Bot Agent');
+
+function createProviderView(type) {
+    const emb = embed('➕ إنشاء وكيل — AI Provider', linesBlock([
+        '**الخطوة 2 من 3: اختر مزود الذكاء الاصطناعي.**',
+        'DeepSeek يدعم الوكلاء الحاليين، و Qwen يحتاج Auth Token فقط.',
+    ]), COLORS.success);
+    const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId(`${DASH_PREFIX}:create_provider:${type}`)
+            .setPlaceholder('اختر AI Provider')
+            .addOptions(listProviders().map((provider) => ({
+                label: provider.displayName || provider.name,
+                value: provider.name,
+                description: provider.capabilities?.pow ? 'يدعم إعدادات POW' : 'مزود مستقل بدون POW',
+            }))),
+    );
+    return { embeds: [emb], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:create`, 'عودة', ButtonStyle.Secondary, ICONS.back)])] };
+}
+
+function createAgentModal(type, provider = 'deepseek') {
+    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:create_modal:${type}:${provider}`).setTitle(type === 'user' ? 'إنشاء User Account Runtime' : 'إنشاء Bot Agent');
     modal.addComponents(
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel(type === 'user' ? 'User Token' : 'Discord Bot Token').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token').setStyle(TextInputStyle.Short).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('model_token').setLabel(getProviderMeta(provider).credentialField.label).setStyle(TextInputStyle.Short).setRequired(true)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية / Personality').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500)),
     );
     return modal;
@@ -330,13 +350,24 @@ function safeModalValue(value, max) {
     return String(value || '').slice(0, max);
 }
 
-function conversationCreateModal(agentId) {
+function conversationCreateModal(agent) {
+    const agentId = String(agent._id || agent.id);
+    const provider = agent.model_config?.provider || (agent.deepseek_token ? 'deepseek' : 'deepseek');
+    const meta = getProviderMeta(provider);
     const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:conversation_create_modal:${agentId}`).setTitle('إنشاء محادثة وكيل');
-    modal.addComponents(
+    const rows = [
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('channel_id').setLabel('ID القناة').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel('الوضع: default أو expert').setStyle(TextInputStyle.Short).setRequired(false).setValue('default')),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('thinking').setLabel('التفكير: on أو off').setStyle(TextInputStyle.Short).setRequired(false).setValue('off')),
-    );
+    ];
+    if (meta.capabilities?.modes) {
+        rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('mode').setLabel(`النموذج: ${(meta.models || ['default']).join(' أو ')}`).setStyle(TextInputStyle.Short).setRequired(false).setValue(meta.defaultModel || 'default')));
+    }
+    if (meta.capabilities?.thinking) {
+        rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('thinking').setLabel('التفكير: on أو off').setStyle(TextInputStyle.Short).setRequired(false).setValue('off')));
+    }
+    if (meta.capabilities?.search) {
+        rows.push(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('search').setLabel('البحث: on أو off').setStyle(TextInputStyle.Short).setRequired(false).setValue('on')));
+    }
+    modal.addComponents(...rows.slice(0, 5));
     return modal;
 }
 
@@ -357,7 +388,7 @@ function editAgentModal(agent) {
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80).setValue(safeModalValue(agent.name, 80))),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500).setValue(safeModalValue(agent.personality, 1500))),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel('Discord Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('model_token').setLabel((agent.model_config?.getProviderMeta(provider).credentialField.label) + ' جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
     );
     return modal;
 }
@@ -809,7 +840,11 @@ async function handleDashboardInteraction(interaction, manager) {
     }
 
     if (interaction.isStringSelectMenu() && id === `${DASH_PREFIX}:create_type`) {
-        await interaction.showModal(createAgentModal(interaction.values[0]));
+        await interaction.update(createProviderView(interaction.values[0]));
+        return true;
+    }
+    if (interaction.isStringSelectMenu() && id.startsWith(`${DASH_PREFIX}:create_provider:`)) {
+        await interaction.showModal(createAgentModal(parts[2], interaction.values[0]));
         return true;
     }
     if (interaction.isStringSelectMenu() && id === `${DASH_PREFIX}:agent_select`) {
@@ -829,10 +864,19 @@ async function handleDashboardInteraction(interaction, manager) {
 
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:create_modal:`)) {
         const type = parts[2] === 'user' ? 'user' : 'bot';
+        const requestedProvider = String(parts[3] || 'deepseek').toLowerCase();
+        const provider = listProviders().some((p) => p.name === requestedProvider) ? requestedProvider : 'deepseek';
+        const providerMeta = getProviderMeta(provider);
+        const token = interaction.fields.getTextInputValue('model_token');
+        const credentialKey = providerMeta.credentialField?.key || 'token';
+        const credentials = { [credentialKey]: token };
+        if (provider === 'qwen') credentials.device_id = 'auto';
+        const model_config = { provider, model: providerMeta.defaultModel || 'default', credentials };
         const agent = await manager.createAgent({
             name: interaction.fields.getTextInputValue('name'),
             discord_token: interaction.fields.getTextInputValue('discord_token'),
-            deepseek_token: interaction.fields.getTextInputValue('deepseek_token'),
+            deepseek_token: provider === 'deepseek' ? token : undefined,
+            model_config,
             personality: interaction.fields.getTextInputValue('personality') || '',
             token_type: type,
         });
@@ -845,9 +889,23 @@ async function handleDashboardInteraction(interaction, manager) {
         const agentId = parts[2];
         const cfg = require('./config');
         const $set = { updated_at: new Date() };
-        for (const key of ['name', 'personality', 'discord_token', 'deepseek_token']) {
+        for (const key of ['name', 'personality', 'discord_token']) {
             const val = interaction.fields.getTextInputValue(key);
             if (val) $set[key] = val;
+        }
+        const modelToken = interaction.fields.getTextInputValue('model_token');
+        if (modelToken) {
+            const existing = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+            const provider = existing?.model_config?.provider || 'deepseek';
+            const providerMeta = getProviderMeta(provider);
+            const credentialKey = providerMeta.credentialField?.key || 'token';
+            $set.model_config = {
+                provider,
+                model: existing?.model_config?.model || providerMeta.defaultModel || 'default',
+                credentials: { ...(existing?.model_config?.credentials || {}), [credentialKey]: modelToken },
+            };
+            if (provider === 'qwen') $set.model_config.credentials.device_id = $set.model_config.credentials.device_id || 'auto';
+            if (provider === 'deepseek') $set.deepseek_token = modelToken;
         }
         await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set });
         await manager.logAgent(agentId, 'update', 'تم تعديل إعدادات الوكيل من Dashboard', { fields: Object.keys($set).filter(k => k !== 'updated_at') });
@@ -859,18 +917,27 @@ async function handleDashboardInteraction(interaction, manager) {
         const agentId = parts[2];
         const { db_save_channel_session } = require('./utils');
         const channelId = interaction.fields.getTextInputValue('channel_id').replace(/\D/g, '');
-        const modeRaw = interaction.fields.getTextInputValue('mode') || 'default';
-        const mode = modeRaw.toLowerCase().includes('expert') ? 'expert' : 'default';
-        const thinkingRaw = interaction.fields.getTextInputValue('thinking') || 'off';
+        const cfg = require('./config');
+        const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+        const provider = agent?.model_config?.provider || (agent?.deepseek_token ? 'deepseek' : 'deepseek');
+        const meta = getProviderMeta(provider);
+        let mode = meta.defaultModel || 'default';
+        if (meta.capabilities?.modes) {
+            const modeRaw = interaction.fields.getTextInputValue('mode') || mode;
+            mode = (meta.models || []).includes(modeRaw) ? modeRaw : (modeRaw.toLowerCase().includes('expert') ? 'expert' : mode);
+        }
+        const thinkingRaw = meta.capabilities?.thinking ? (interaction.fields.getTextInputValue('thinking') || 'off') : 'off';
         const thinking = /^on|true|yes|1|مفعل/i.test(thinkingRaw);
+        const searchRaw = meta.capabilities?.search ? (interaction.fields.getTextInputValue('search') || 'on') : 'off';
+        const providerOptions = { search: /^on|true|yes|1|مفعل/i.test(searchRaw) };
         if (!channelId) {
             await interaction.reply({ content: '❌ اكتب ID قناة صحيح.', ephemeral: true });
             return true;
         }
-        await db_save_channel_session(interaction.guildId, channelId, null, null, mode, thinking, agentId);
+        await db_save_channel_session(interaction.guildId, channelId, null, null, mode, thinking, agentId, providerOptions);
         const runtime = manager?.runtimes?.get?.(String(agentId));
-        runtime?.channel_sessions?.set?.(`${interaction.guildId}_${channelId}`, { session_id: null, parent_message_id: null, mode, thinking });
-        await manager.logAgent(agentId, 'conversation_create', 'تم إنشاء محادثة قناة من Dashboard', { channel_id: channelId, mode, thinking });
+        runtime?.channel_sessions?.set?.(`${interaction.guildId}_${channelId}`, { session_id: null, parent_message_id: null, mode, thinking, provider_options: providerOptions });
+        await manager.logAgent(agentId, 'conversation_create', 'تم إنشاء محادثة قناة من Dashboard', { channel_id: channelId, provider, mode, thinking, provider_options: providerOptions });
         await interaction.reply(await renderAgentConversations(agentId, interaction.guildId));
         return true;
     }
@@ -969,7 +1036,13 @@ async function handleDashboardInteraction(interaction, manager) {
         if (action === 'provider') return updateInteraction(interaction, await renderAgentProvider(agentId, interaction.guildId));
         if (action === 'account') return updateInteraction(interaction, await renderAccountSettings(agentId, interaction.guildId));
         if (action === 'account_adv') return updateInteraction(interaction, await renderAccountAdvanced(agentId, interaction.guildId));
-        if (action === 'conversation_create') { await interaction.showModal(conversationCreateModal(agentId)); return true; }
+        if (action === 'conversation_create') {
+            const cfg = require('./config');
+            const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+            if (!agent) { await interaction.reply({ content: '❌ الوكيل غير موجود.', ephemeral: true }); return true; }
+            await interaction.showModal(conversationCreateModal(agent));
+            return true;
+        }
         if (action === 'account_run') {
             await interaction.showModal(accountRunModal(agentId));
             return true;
@@ -1097,13 +1170,24 @@ async function renderAgentProvider(agentId, guildId) {
     const cfg = require('./config');
     const { get_pow_provider } = require('./utils');
     const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
+    const aiProvider = agent?.model_config?.provider || (agent?.deepseek_token ? 'deepseek' : 'deepseek');
+    const meta = getProviderMeta(aiProvider);
+    if (!meta.capabilities?.pow) {
+        const emb = embed('⚡ مزود POW غير مستخدم', linesBlock([
+            `الوكيل: **${agent?.name || 'غير معروف'}**`,
+            `مزود AI الحالي: **${meta.displayName || aiProvider}**`,
+            '',
+            'هذا المزود لا يستخدم POW، لذلك لا توجد إعدادات DeepSeek/POW هنا.',
+        ]), COLORS.info);
+        return { embeds: [emb], components: rowsFromButtons([button(`${DASH_PREFIX}:agent:${agentId}:view`, 'عودة للوكيل', ButtonStyle.Secondary, ICONS.back)]) };
+    }
     const provider = guildId ? await get_pow_provider(guildId, agentId).catch(() => 'railway') : 'railway';
     const emb = embed('⚡ مزود POW للوكيل', linesBlock([
         `الوكيل: **${agent?.name || 'غير معروف'}**`,
         `السيرفر الحالي: **${guildId || 'غير متاح'}**`,
         `المزود الحالي: **${provider}**`,
         '',
-        'هذا الإعداد خاص بهذا الوكيل، وليس Manager Bot.',
+        'هذا الإعداد خاص بـ DeepSeek فقط، وليس Manager Bot أو Qwen.',
     ]), COLORS.info);
     const row = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -1125,7 +1209,7 @@ async function renderAgentConversations(agentId, guildId) {
     const rows = sessions.length ? sessions.map((session) => {
         const channelId = String(session.channel_id);
         const updated = fmtDate(session.updated_at || session.created_at);
-        return `• <#${channelId}> — الوضع: **${session.mode || 'default'}** — التفكير: **${session.thinking ? 'مفعل' : 'مغلق'}** — ${updated}`;
+        return `• <#${channelId}> — النموذج/الوضع: **${session.mode || 'default'}** — التفكير: **${session.thinking ? 'مفعل' : 'مغلق'}** — البحث: **${session.provider_options?.search ? 'مفعل' : 'مغلق'}** — ${updated}`;
     }) : ['لا توجد محادثات محفوظة لهذا الوكيل في هذا السيرفر.'];
     const emb = embed('💬 محادثات الوكيل', linesBlock([
         `الوكيل: **${agent?.name || 'غير معروف'}**`,
