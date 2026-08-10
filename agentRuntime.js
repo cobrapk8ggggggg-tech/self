@@ -328,7 +328,7 @@ client.once('ready', async () => {
 //  حدث INTERACTION (للأوامر + Autocomplete)
 // ══════════════════════════════════════════════════════════════
 client.on('interactionCreate', async (interaction) => {
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality, modelConfig };
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, qwenAuthToken: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken, personality, modelConfig };
     if (interaction.customId?.startsWith?.('acct:')) {
         if (await handleAccountInteraction(client, interaction, runtimeContext).catch((e) => { console.error('[Account Interaction]', e); return false; })) return;
     }
@@ -630,7 +630,7 @@ client.on('messageCreate', async (message) => {
     // تجاهل رسائل الحساب نفسه
     if (message.author.id === client.user.id) return;
 
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality, modelConfig };
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, qwenAuthToken: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken, personality, modelConfig };
     if (await handleControlReply(client, message, runtimeContext).catch(() => false)) return;
 
     // رسائل الخاص للحساب الحقيقي تُحوّل إلى قناة التحكم المحددة.

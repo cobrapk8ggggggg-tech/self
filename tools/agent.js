@@ -191,16 +191,20 @@ async function runAgent(
             const modelConfig = runtime.modelConfig || {
                 provider: 'deepseek',
                 model: 'default',
-                credentials: {
-                    token: runtime.deepseekToken,
-                    auth_token: runtime.qwenAuthToken,
-                }
+                credentials: {}
             };
             
-            // تحويل legacy deepseekToken إلى modelConfig إذا لم يكن موجوداً
-            if (!modelConfig.provider && runtime.deepseekToken) {
-                modelConfig.provider = 'deepseek';
-                modelConfig.credentials = { token: runtime.deepseekToken };
+            // تحويل legacy tokens إلى modelConfig إذا لم يكن موجوداً بشكل صحيح
+            if (!modelConfig.provider || !modelConfig.credentials || Object.keys(modelConfig.credentials).length === 0) {
+                if (runtime.qwenAuthToken) {
+                    modelConfig.provider = 'qwen';
+                    modelConfig.model = 'qwen3.8-max';
+                    modelConfig.credentials = { auth_token: runtime.qwenAuthToken };
+                } else if (runtime.deepseekToken) {
+                    modelConfig.provider = 'deepseek';
+                    modelConfig.model = 'default';
+                    modelConfig.credentials = { token: runtime.deepseekToken };
+                }
             }
             
             console.log('[Agent] Using model config:', { 
