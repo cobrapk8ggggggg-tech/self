@@ -9,7 +9,12 @@
 'use strict';
 
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+
+// Helper for UUID v4 using native crypto (no external dependency)
+function generateUUID() {
+    return crypto.randomUUID();
+}
 
 class QwenAPI {
     constructor(config = {}) {
@@ -70,7 +75,7 @@ class QwenAPI {
             'x-device-id': this.DEVICE_ID,
             'source': 'app',
             'x-mini-wua': kind === 'chat' ? this.MINI_WUA_CHAT : this.MINI_WUA_NEW,
-            'x-request-id': uuidv4(),
+            'x-request-id': generateUUID(),
             'Accept-Language': 'en-US',
             'Accept-Charset': 'UTF-8',
             'Content-Type': kind === 'chat' ? 'application/json; charset=UTF-8' : 'application/json',
@@ -173,7 +178,7 @@ class QwenAPI {
      */
     text_payload(chat_id, prompt, stream = true, model = 'qwen3.8-max', parent_id = null) {
         const ts = Math.floor(Date.now() / 1000);
-        const fid = uuidv4();
+        const fid = generateUUID();
         
         const msg = {
             id: null,
