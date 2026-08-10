@@ -237,9 +237,53 @@ const agentId = String(agentConfig._id || agentConfig.id || 'default');
 const agentName = agentConfig.name || agentId;
 const tokenType = normalizeTokenType(agentConfig.token_type || agentConfig.tokenType || 'bot');
 const discordToken = agentConfig.discord_token || agentConfig.discordToken;
-const deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
+
+// دعم modelConfig الجديد مع التوافق الرجعي لـ deepseek_token و qwen_auth_token
+let modelConfig = agentConfig.model_config || agentConfig.modelConfig;
+let deepseekToken = agentConfig.deepseek_token || agentConfig.deepseekToken;
+
+// تحويل legacy tokens إلى modelConfig إذا لم يكن modelConfig موجوداً
+if (!modelConfig) {
+    if (deepseekToken) {
+        console.log('[AgentRuntime] Converting legacy deepseek_token to modelConfig for agent:', agentId);
+        modelConfig = {
+            provider: 'deepseek',
+            model: 'default',
+            credentials: {
+                token: deepseekToken,
+            }
+        };
+    } else if (agentConfig.qwen_auth_token || agentConfig.qwenAuthToken) {
+        console.log('[AgentRuntime] Converting legacy qwen_auth_token to modelConfig for agent:', agentId);
+        const qwenAuthToken = agentConfig.qwen_auth_token || agentConfig.qwenAuthToken;
+        modelConfig = {
+            provider: 'qwen',
+            model: 'qwen3.8-max',
+            credentials: {
+                auth_token: qwenAuthToken,
+            }
+        };
+    }
+} else if (modelConfig && !modelConfig.credentials) {
+    // إضافة credentials إذا كانت فارغة
+    if (deepseekToken) {
+        modelConfig.credentials = { token: deepseekToken };
+    } else if (agentConfig.qwen_auth_token || agentConfig.qwenAuthToken) {
+        modelConfig.credentials = { 
+            auth_token: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken 
+        };
+    }
+}
+
+// التحقق من وجود مزود صالح
+if (!modelConfig || !modelConfig.provider) {
+    throw new Error('model_config أو deepseek_token أو qwen_auth_token مفقود لهذا الوكيل');
+}
+
+// استخراج deepseekToken للتوافق مع الكود القديم (سيتم إزالته مستقبلاً)
+deepseekToken = modelConfig.credentials?.token || deepseekToken;
+
 if (!discordToken) throw new Error('discord_token مفقود لهذا الوكيل');
-if (!deepseekToken) throw new Error('deepseek_token مفقود لهذا الوكيل');
 const personality = agentConfig.personality || '';
 const channel_sessions = new Map();
 const allowed_channels_cache = new Map();
@@ -284,7 +328,7 @@ client.once('ready', async () => {
 //  حدث INTERACTION (للأوامر + Autocomplete)
 // ══════════════════════════════════════════════════════════════
 client.on('interactionCreate', async (interaction) => {
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, qwenAuthToken: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken, personality, modelConfig };
     if (interaction.customId?.startsWith?.('acct:')) {
         if (await handleAccountInteraction(client, interaction, runtimeContext).catch((e) => { console.error('[Account Interaction]', e); return false; })) return;
     }
@@ -552,7 +596,7 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.deferReply({ ephemeral: true }).catch(() => {});
             const count = interaction.options.getInteger('عدد') || null;
             const minutes = interaction.options.getInteger('دقائق') || null;
-            const result = await runEventSeries(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality }, { gameName: interaction.options.getString('game'), count: count || 1, minutes: minutes || 0, first: true });
+            const result = await runEventSeries(client, guild, interaction.channel, { agentId, allowed_channels_cache, deepseekToken, personality, modelConfig }, { gameName: interaction.options.getString('game'), count: count || 1, minutes: minutes || 0, first: true });
             const names = result.results.map(g => g.name).join('، ') || '—';
             await interaction.editReply({ content: `${result.ok ? '✅' : '⚠️'} ${result.msg} الألعاب: **${names}**.` }).catch(() => {});
         }
@@ -586,7 +630,7 @@ client.on('messageCreate', async (message) => {
     // تجاهل رسائل الحساب نفسه
     if (message.author.id === client.user.id) return;
 
-    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, personality };
+    const runtimeContext = { agentId, allowed_channels_cache, deepseekToken, qwenAuthToken: agentConfig.qwen_auth_token || agentConfig.qwenAuthToken, personality, modelConfig };
     if (await handleControlReply(client, message, runtimeContext).catch(() => false)) return;
 
     // رسائل الخاص للحساب الحقيقي تُحوّل إلى قناة التحكم المحددة.
@@ -743,7 +787,7 @@ client.on('messageCreate', async (message) => {
             thinking,
             accessLevel,
             client,
-            { deepseekToken, personality, agentId },
+            { deepseekToken, personality, agentId, modelConfig },
         );
 
         // تحديث الجلسة في RAM و DB

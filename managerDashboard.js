@@ -315,14 +315,84 @@ function createTypeView() {
     return { embeds: [emb], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:home`, 'إلغاء والعودة', ButtonStyle.Secondary, ICONS.back)])] };
 }
 
-function createAgentModal(type) {
-    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:create_modal:${type}`).setTitle(type === 'user' ? 'إنشاء User Account Runtime' : 'إنشاء Bot Agent');
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel(type === 'user' ? 'User Token' : 'Discord Bot Token').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token').setStyle(TextInputStyle.Short).setRequired(true)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية / Personality').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500)),
+function createProviderView(type) {
+    const emb = embed('🧠 اختيار مزود AI', linesBlock([
+        '**الخطوة 2 من 3: اختر مزود الذكاء الاصطناعي.**',
+        `🔹 **DeepSeek**: النموذج الحالي السريع والدقيق`,
+        `🔹 **Qwen**: نموذج Qwen من Alibaba مع دعم متقدم للغة العربية`,
+        '',
+        `النوع المختار: **${type === 'user' ? 'User Account' : 'Bot Token'}**`,
+    ]), COLORS.info);
+    const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId(`${DASH_PREFIX}:create_provider:${type}`)
+            .setPlaceholder('اختر مزود AI')
+            .addOptions([
+                { label: 'DeepSeek', value: 'deepseek', description: 'استخدام DeepSeek API', emoji: '🔷' },
+                { label: 'Qwen', value: 'qwen', description: 'استخدام Qwen (Tongyi) API', emoji: '🟣' },
+            ]),
     );
+    return { embeds: [emb], components: [row, ...rowsFromButtons([button(`${DASH_PREFIX}:home`, 'إلغاء والعودة', ButtonStyle.Secondary, ICONS.back)])] };
+}
+
+function createAgentModal(type, provider = 'deepseek') {
+    const modal = new ModalBuilder()
+        .setCustomId(`${DASH_PREFIX}:create_modal:${type}:${provider}`)
+        .setTitle(provider === 'qwen' ? 'إنشاء وكيل Qwen' : 'إنشاء وكيل DeepSeek');
+    
+    const components = [
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('name')
+                .setLabel('اسم الوكيل')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setMaxLength(80)
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('discord_token')
+                .setLabel(type === 'user' ? 'User Token' : 'Discord Bot Token')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+        ),
+    ];
+    
+    // حقل المزود بناءً على الاختيار
+    if (provider === 'deepseek') {
+        components.push(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('deepseek_token')
+                    .setLabel('DeepSeek Token')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+            )
+        );
+    } else if (provider === 'qwen') {
+        components.push(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('qwen_auth_token')
+                    .setLabel('Qwen Auth Token')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+            )
+        );
+    }
+    
+    components.push(
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('personality')
+                .setLabel('الشخصية / Personality')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)
+                .setMaxLength(1500)
+        )
+    );
+    
+    modal.addComponents(...components);
     return modal;
 }
 
@@ -352,13 +422,63 @@ function accountRunModal(agentId) {
 }
 
 function editAgentModal(agent) {
-    const modal = new ModalBuilder().setCustomId(`${DASH_PREFIX}:edit_modal:${agent._id}`).setTitle('تعديل إعدادات الوكيل');
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('اسم الوكيل').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(80).setValue(safeModalValue(agent.name, 80))),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('personality').setLabel('الشخصية').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(1500).setValue(safeModalValue(agent.personality, 1500))),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('discord_token').setLabel('Discord Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
-        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('deepseek_token').setLabel('DeepSeek Token جديد (اختياري)').setStyle(TextInputStyle.Short).setRequired(false)),
-    );
+    const provider = agent?.model_config?.provider || 'deepseek';
+    const modal = new ModalBuilder()
+        .setCustomId(`${DASH_PREFIX}:edit_modal:${agent._id}`)
+        .setTitle(`تعديل وكيل ${provider === 'qwen' ? 'Qwen' : 'DeepSeek'}`);
+    
+    const components = [
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('name')
+                .setLabel('اسم الوكيل')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+                .setMaxLength(80)
+                .setValue(safeModalValue(agent.name, 80))
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('personality')
+                .setLabel('الشخصية')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(false)
+                .setMaxLength(1500)
+                .setValue(safeModalValue(agent.personality, 1500))
+        ),
+        new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+                .setCustomId('discord_token')
+                .setLabel('Discord Token جديد (اختياري)')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(false)
+        ),
+    ];
+    
+    // إضافة حقل المزود بناءً على النوع الحالي
+    if (provider === 'qwen') {
+        components.push(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('qwen_auth_token')
+                    .setLabel('Qwen Auth Token جديد (اختياري)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+            )
+        );
+    } else {
+        components.push(
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId('deepseek_token')
+                    .setLabel('DeepSeek Token جديد (اختياري)')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+            )
+        );
+    }
+    
+    modal.addComponents(...components);
     return modal;
 }
 
@@ -809,7 +929,14 @@ async function handleDashboardInteraction(interaction, manager) {
     }
 
     if (interaction.isStringSelectMenu() && id === `${DASH_PREFIX}:create_type`) {
-        await interaction.showModal(createAgentModal(interaction.values[0]));
+        // الانتقال لاختيار المزود
+        await interaction.update(createProviderView(interaction.values[0]));
+        return true;
+    }
+    if (interaction.isStringSelectMenu() && id.startsWith(`${DASH_PREFIX}:create_provider:`)) {
+        const type = parts[2];
+        const provider = interaction.values[0];
+        await interaction.showModal(createAgentModal(type, provider));
         return true;
     }
     if (interaction.isStringSelectMenu() && id === `${DASH_PREFIX}:agent_select`) {
@@ -829,14 +956,46 @@ async function handleDashboardInteraction(interaction, manager) {
 
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:create_modal:`)) {
         const type = parts[2] === 'user' ? 'user' : 'bot';
-        const agent = await manager.createAgent({
+        const provider = parts[3] || 'deepseek';
+        
+        // جمع البيانات بناءً على المزود
+        const agentData = {
             name: interaction.fields.getTextInputValue('name'),
             discord_token: interaction.fields.getTextInputValue('discord_token'),
-            deepseek_token: interaction.fields.getTextInputValue('deepseek_token'),
             personality: interaction.fields.getTextInputValue('personality') || '',
             token_type: type,
+        };
+        
+        // إنشاء model_config بناءً على المزود المختار
+        if (provider === 'qwen') {
+            const qwenAuthToken = interaction.fields.getTextInputValue('qwen_auth_token');
+            agentData.model_config = {
+                provider: 'qwen',
+                model: 'qwen3.8-max',
+                credentials: {
+                    auth_token: qwenAuthToken,
+                }
+            };
+            // ترك deepseek_token فارغ للتوافق الرجعي
+            agentData.deepseek_token = null;
+        } else {
+            // DeepSeek (الافتراضي)
+            const deepseekToken = interaction.fields.getTextInputValue('deepseek_token');
+            agentData.model_config = {
+                provider: 'deepseek',
+                model: 'default',
+                credentials: {
+                    token: deepseekToken,
+                }
+            };
+            agentData.deepseek_token = deepseekToken;
+        }
+        
+        const agent = await manager.createAgent(agentData);
+        await manager.logAgent(String(agent._id), 'create', `تم إنشاء وكيل ${provider.toUpperCase()} من Dashboard`, { 
+            token_type: type,
+            provider: provider 
         });
-        await manager.logAgent(String(agent._id), 'create', 'تم إنشاء وكيل من Dashboard', { token_type: type });
         await interaction.reply(await renderAgent(manager, String(agent._id)));
         return true;
     }
@@ -844,13 +1003,45 @@ async function handleDashboardInteraction(interaction, manager) {
     if (interaction.isModalSubmit() && id.startsWith(`${DASH_PREFIX}:edit_modal:`)) {
         const agentId = parts[2];
         const cfg = require('./config');
+        const agent = await cfg.agents_col.findOne({ _id: new ObjectId(agentId) });
         const $set = { updated_at: new Date() };
-        for (const key of ['name', 'personality', 'discord_token', 'deepseek_token']) {
+        
+        // تحديث الحقول الأساسية
+        for (const key of ['name', 'personality', 'discord_token']) {
             const val = interaction.fields.getTextInputValue(key);
             if (val) $set[key] = val;
         }
+        
+        // التعامل مع model_config بناءً على المزود الحالي
+        const currentProvider = agent?.model_config?.provider || 'deepseek';
+        const deepseekVal = interaction.fields.getTextInputValue('deepseek_token');
+        const qwenVal = interaction.fields.getTextInputValue('qwen_auth_token');
+        
+        if (currentProvider === 'qwen' && qwenVal) {
+            $set.model_config = {
+                provider: 'qwen',
+                model: agent.model_config?.model || 'qwen3.8-max',
+                credentials: {
+                    auth_token: qwenVal,
+                }
+            };
+            $set.deepseek_token = null;
+        } else if (deepseekVal) {
+            $set.model_config = {
+                provider: 'deepseek',
+                model: agent.model_config?.model || 'default',
+                credentials: {
+                    token: deepseekVal,
+                }
+            };
+            $set.deepseek_token = deepseekVal;
+        }
+        
         await cfg.agents_col.updateOne({ _id: new ObjectId(agentId) }, { $set });
-        await manager.logAgent(agentId, 'update', 'تم تعديل إعدادات الوكيل من Dashboard', { fields: Object.keys($set).filter(k => k !== 'updated_at') });
+        await manager.logAgent(agentId, 'update', 'تم تعديل إعدادات الوكيل من Dashboard', { 
+            fields: Object.keys($set).filter(k => k !== 'updated_at'),
+            provider: currentProvider 
+        });
         await interaction.reply(await renderAgent(manager, agentId));
         return true;
     }

@@ -8,6 +8,13 @@
 
 'use strict';
 
+
+// FIX: Force load crypto globally to fix MongoDB error
+if (typeof global.crypto === 'undefined') {
+    global.crypto = require('crypto');
+}
+// End Fix
+
 const { ObjectId } = require('mongodb');
 const { Client, GatewayIntentBits, Partials, REST, Routes } = require('discord.js');
 const { DISCORD_TOKEN, connectMongo } = require('./config');
@@ -208,9 +215,46 @@ async function retireLegacyDefaultAgents() {
     );
 }
 
-async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot' }) {
+async function createAgent({ name, discord_token, deepseek_token, qwen_auth_token, personality = '', token_type = 'bot', model_config }) {
     const cfg = require('./config');
-    const doc = { name, discord_token, deepseek_token, personality, token_type, status: LIFECYCLE.STOPPED, created_at: new Date(), updated_at: new Date() };
+    
+    // دعم model_config الجديد مع التوافق الرجعي لـ deepseek_token و qwen_auth_token
+    let finalModelConfig = model_config;
+    
+    // إذا لم يكن model_config موجوداً، نحاول تحويل legacy tokens
+    if (!finalModelConfig) {
+        if (deepseek_token) {
+            finalModelConfig = {
+                provider: 'deepseek',
+                model: 'default',
+                credentials: {
+                    token: deepseek_token,
+                }
+            };
+        } else if (qwen_auth_token) {
+            finalModelConfig = {
+                provider: 'qwen',
+                model: 'qwen3.8-max',
+                credentials: {
+                    auth_token: qwen_auth_token,
+                }
+            };
+        }
+    }
+    
+    const doc = { 
+        name, 
+        discord_token, 
+        deepseek_token: deepseek_token || null, // الاحتفاظ بالحقل القديم للتوافق الرجعي
+        qwen_auth_token: qwen_auth_token || null, // حقل Qwen الجديد
+        model_config: finalModelConfig, // الحقل الجديد الأساسي
+        personality, 
+        token_type, 
+        status: LIFECYCLE.STOPPED, 
+        created_at: new Date(), 
+        updated_at: new Date() 
+    };
+    
     const res = await cfg.agents_col.insertOne(doc);
     return { ...doc, _id: res.insertedId };
 }
@@ -261,7 +305,10 @@ async function bootAgents() {
     const cfg = require('./config');
     const agents = await cfg.agents_col.find({ status: LIFECYCLE.RUNNING, legacy: { $ne: true } }).toArray();
     for (const agent of agents) startAgent(agent);
+    
+    console.log('🔄 [SYSTEM UPDATE] Syncing repository state...');
     console.log(`✅ Agent manager ready — running ${agents.length} agents`);
+    console.log(`📡 PoW Service: ${process.env.POW_SERVICE_URL || 'Not Configured'}`);
 
     // ⬅️ بدء نظام الجدولة الذكي
     const { startScheduleTimers } = require('./accountAgent');
