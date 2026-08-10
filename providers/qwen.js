@@ -1,5 +1,14 @@
 'use strict';
 
+
+const metadata = Object.freeze({
+    displayName: 'Qwen',
+    defaultModel: 'qwen3.8-max',
+    models: ['qwen3.8-max'],
+    capabilities: { modes: false, thinking: true, search: true, pow: false },
+    credentialField: { key: 'auth_token', label: 'Qwen Auth Token' },
+});
+
 const axios = require('axios');
 const crypto = require('crypto');
 const { QWEN_BASE_URL } = require('../config');
@@ -51,9 +60,9 @@ async function newChat(credentials) {
     if (!id) throw new Error(`Qwen لم يرجع chat_id: ${JSON.stringify(data).slice(0, 500)}`);
     return id;
 }
-function textPayload(chatId, prompt, model, parentId, thinking) {
+function textPayload(chatId, prompt, model, parentId, thinking, contextSearch = true) {
     const ts = Math.floor(Date.now() / 1000);
-    const msg = { id: null, fid: uuid(), chat_type: 't2t', content: prompt, role: 'user', feature_config: { thinking_enabled: Boolean(thinking), output_schema: 'phase', research_mode: 'normal', auto_thinking: Boolean(thinking), thinking_mode: thinking ? 'Deep' : 'Fast', thinking_format: 'summary', auto_search: true }, timestamp: ts, sub_chat_type: 't2t', models: [model], model: '', files: [], user_action: 'chat', extra: { meta: { subChatType: 't2t' } }, parentId: parentId || null, parent_id: parentId || null };
+    const msg = { id: null, fid: uuid(), chat_type: 't2t', content: prompt, role: 'user', feature_config: { thinking_enabled: Boolean(thinking), output_schema: 'phase', research_mode: 'normal', auto_thinking: Boolean(thinking), thinking_mode: thinking ? 'Deep' : 'Fast', thinking_format: 'summary', auto_search: Boolean(contextSearch) }, timestamp: ts, sub_chat_type: 't2t', models: [model], model: '', files: [], user_action: 'chat', extra: { meta: { subChatType: 't2t' } }, parentId: parentId || null, parent_id: parentId || null };
     return { stream: true, version: '2.1', incremental_output: true, chatId, chat_id: chatId, chat_mode: 'normal', model, messages: [msg], timestamp: ts, parentId: parentId || '', parent_id: parentId || null };
 }
 function getPath(obj, path) { let cur = obj; for (const k of path) { if (Number.isInteger(k) && Array.isArray(cur) && cur.length > k) cur = cur[k]; else if (cur && typeof cur === 'object' && k in cur) cur = cur[k]; else return ''; } return typeof cur === 'string' ? cur : ''; }
@@ -82,9 +91,9 @@ async function chat(config = {}, prompt, context = {}) {
     const credentials = config.credentials || {};
     const model = config.model && config.model !== 'default' ? config.model : 'qwen3.8-max';
     const sessionId = context.sessionId || await newChat(credentials);
-    const payload = textPayload(sessionId, prompt, model, context.parentId || null, context.thinking || false);
+    const payload = textPayload(sessionId, prompt, model, context.parentId || null, context.thinking || false, context.search !== false);
     const resp = await axios.post(`${QWEN_BASE_URL}/api/v2/chat/completions`, payload, { params: { chat_id: sessionId }, headers: headers('chat', credentials, true), timeout: 120000, responseType: 'stream' });
     const parsed = await parseStream(resp.data);
     return { fullText: parsed.fullText, sessionId, parentMessageId: parsed.parentMessageId || context.parentId || null };
 }
-module.exports = { chat, newChat, headers, textPayload, extractText };
+module.exports = { metadata, chat, newChat, headers, textPayload, extractText };

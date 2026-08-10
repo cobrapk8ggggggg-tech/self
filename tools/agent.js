@@ -187,7 +187,7 @@ async function runAgent(
         let raw;
         try {
             const modelConfig = runtime.modelConfig || { provider: 'deepseek', model: mode, credentials: { token: runtime.deepseekToken } };
-            const providerResult = await modelProvider.chat(modelConfig, curPrompt, { guildId, sessionId: curSid, parentId: curPmid, thinking, mode, agentId: runtime.agentId || 'default' });
+            const providerResult = await modelProvider.chat(modelConfig, curPrompt, { guildId, sessionId: curSid, parentId: curPmid, thinking, mode, search: runtime.search, agentId: runtime.agentId || 'default' });
             raw     = providerResult.fullText;
             curSid  = providerResult.sessionId;
             curPmid = providerResult.parentMessageId;

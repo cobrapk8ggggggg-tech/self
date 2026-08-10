@@ -71,7 +71,7 @@ function is_text_attachment(attachment) {
 /**
  * يحفظ جلسة القناة في MongoDB
  */
-async function db_save_channel_session(guild_id, channel_id, session_id, parent_message_id, mode = 'default', thinking = false, agent_id = 'default') {
+async function db_save_channel_session(guild_id, channel_id, session_id, parent_message_id, mode = 'default', thinking = false, agent_id = 'default', provider_options = {}) {
     const cfg = require('./config');
     await cfg.sessions_col.updateOne(
         { agent_id: String(agent_id), guild_id: String(guild_id), channel_id: String(channel_id) },
@@ -81,6 +81,7 @@ async function db_save_channel_session(guild_id, channel_id, session_id, parent_
                 parent_message_id : parent_message_id,
                 mode              : mode,
                 thinking          : Boolean(thinking),
+                provider_options  : provider_options || {},
                 updated_at        : new Date(),
             },
             $setOnInsert: {

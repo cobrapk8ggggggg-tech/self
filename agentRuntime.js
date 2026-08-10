@@ -253,7 +253,7 @@ client.__agentId = agentId;
 // ══════════════════════════════════════════════════════════════
 //  حدث READY
 // ══════════════════════════════════════════════════════════════
-client.once('ready', async () => {
+client.once(client.__selfbotRuntime ? 'ready' : 'clientReady', async () => {
 
     const botName = client.user.displayName || client.user.username;
     console.log(`✅ ${botName} (${client.user.id}) ready`);
@@ -563,6 +563,11 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply({ content: '⛔ هذا الأمر للأدمن فقط.' });
                 return;
             }
+            const aiProvider = modelConfig?.provider || 'deepseek';
+            if (aiProvider !== 'deepseek') {
+                await interaction.reply({ content: `ℹ️ مزود ${aiProvider} لا يستخدم POW، لذلك لا يوجد شيء لتغييره.` });
+                return;
+            }
             const provider = interaction.options.getString('provider', true);
             await set_pow_provider(guild.id, provider, agentId);
             await interaction.reply({ content: `✅ تم تبديل مزود POW إلى **${provider}**` });
@@ -721,6 +726,7 @@ client.on('messageCreate', async (message) => {
     const botName = tokenType === 'user' ? humanizeDisplayName(client.user.displayName || client.user.username) : (client.user.displayName || client.user.username);
     const mode = cs.mode || 'default';
     const thinking = cs.thinking || false;
+    const providerOptions = cs.provider_options || {};
 
     try {
         await message.react('⏳');
@@ -744,7 +750,7 @@ client.on('messageCreate', async (message) => {
             thinking,
             accessLevel,
             client,
-            { modelConfig, deepseekToken, personality, agentId },
+            { modelConfig, deepseekToken, personality, agentId, search: providerOptions.search },
         );
 
         // تحديث الجلسة في RAM و DB
@@ -763,6 +769,7 @@ client.on('messageCreate', async (message) => {
                 mode,
                 thinking,
                 agentId,
+                providerOptions,
             );
         }
 

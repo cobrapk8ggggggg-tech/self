@@ -5,12 +5,32 @@ const qwen = require('./qwen');
 
 const PROVIDERS = Object.freeze({ deepseek, qwen });
 
+const DEFAULT_METADATA = Object.freeze({
+    displayName: 'Custom Provider',
+    defaultModel: 'default',
+    models: ['default'],
+    capabilities: { modes: false, thinking: false, search: false, pow: false },
+    credentialField: { key: 'token', label: 'Provider Token' },
+});
+
+function getProviderMeta(providerName = 'deepseek') {
+    const provider = PROVIDERS[String(providerName || 'deepseek').toLowerCase()];
+    return { ...DEFAULT_METADATA, ...(provider?.metadata || {}) };
+}
+
+function listProviders() {
+    return Object.entries(PROVIDERS).map(([name, provider]) => ({ name, ...getProviderMeta(name), ...(provider.metadata || {}) }));
+}
+
 function normalizeConfig(config = {}) {
-    if (!config || typeof config !== 'object') return { provider: 'deepseek', model: 'default', credentials: {} };
+    if (!config || typeof config !== 'object') return { provider: 'deepseek', model: getProviderMeta('deepseek').defaultModel, credentials: {} };
+    const provider = String(config.provider || 'deepseek').toLowerCase();
+    const meta = getProviderMeta(provider);
     return {
-        provider: String(config.provider || 'deepseek').toLowerCase(),
-        model: config.model || 'default',
+        provider,
+        model: config.model || meta.defaultModel || 'default',
         credentials: config.credentials || {},
+        options: config.options || {},
     };
 }
 
@@ -28,4 +48,4 @@ async function chat(config, prompt, context = {}) {
     return provider.chat(normalized, prompt, context);
 }
 
-module.exports = { chat, normalizeConfig, PROVIDERS };
+module.exports = { chat, normalizeConfig, getProviderMeta, listProviders, PROVIDERS };

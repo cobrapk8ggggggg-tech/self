@@ -3,6 +3,15 @@
  */
 'use strict';
 
+
+const metadata = Object.freeze({
+    displayName: 'DeepSeek',
+    defaultModel: 'default',
+    models: ['default', 'expert'],
+    capabilities: { modes: true, thinking: true, search: false, pow: true },
+    credentialField: { key: 'token', label: 'DeepSeek Token' },
+});
+
 const axios = require('axios');
 const { DEEPSEEK_TOKEN, RAILWAY_URL, POW_PROXY_TELEGRAM } = require('../config');
 const { get_pow_provider } = require('../utils');
@@ -236,6 +245,7 @@ async function _stream_ds(prompt, guildId, sessionId = null, parentMessageId = n
 
 
 module.exports = {
+    metadata,
     _device_id,
     _rangers_id,
     _tz_offset,

@@ -120,15 +120,27 @@ async function cleanupRuntime(agentId) {
     }
 }
 
+
+function isNonRetryableLoginError(err) {
+    const code = err?.code || err?.[Symbol.for('code')];
+    const msg = String(err?.message || err || '');
+    return code === 'TOKEN_INVALID' || msg.includes('TOKEN_INVALID') || msg.includes('invalid token') || msg.includes('An invalid token was provided');
+}
+
 async function scheduleReconnect(agentId, reason = 'unexpected disconnect') {
     const id = String(agentId);
     if (reconnectTimers.has(id)) return;
+    if (isNonRetryableLoginError(reason)) {
+        await setAgentStatus(id, LIFECYCLE.FAILED, { reason: 'Discord token invalid; reconnect disabled' });
+        await logAgent(id, 'reconnect_blocked', 'Discord token invalid; reconnect disabled');
+        return;
+    }
     await logAgent(id, 'reconnect_scheduled', reason, { reason });
     const timer = setTimeout(async () => {
         reconnectTimers.delete(id);
         const cfg = require('./config');
         const agent = await cfg.agents_col.findOne({ _id: new ObjectId(id) });
-        if (!agent || agent.status === LIFECYCLE.STOPPED || agent.status === LIFECYCLE.STOPPING) return;
+        if (!agent || agent.status === LIFECYCLE.STOPPED || agent.status === LIFECYCLE.STOPPING || agent.status === LIFECYCLE.FAILED) return;
         await restartAgent(id, reason);
     }, 10_000);
     reconnectTimers.set(id, timer);
@@ -170,6 +182,7 @@ async function startAgent(agent) {
         return runtime;
     } catch (e) {
         await cleanupRuntime(id);
+        if (isNonRetryableLoginError(e) && reconnectTimers.has(id)) { clearTimeout(reconnectTimers.get(id)); reconnectTimers.delete(id); }
         await setAgentStatus(id, LIFECYCLE.FAILED, { reason: e.message });
         await logAgent(id, 'failed', e.message, { stack: e.stack });
         console.error(`[Agent ${id}] start failed:`, e);
@@ -205,6 +218,7 @@ async function restartAgent(agentId, reason = 'restart requested') {
         return await startAgent({ ...fresh, status: LIFECYCLE.RUNNING });
     } catch (e) {
         await cleanupRuntime(id);
+        if (isNonRetryableLoginError(e) && reconnectTimers.has(id)) { clearTimeout(reconnectTimers.get(id)); reconnectTimers.delete(id); }
         await setAgentStatus(id, LIFECYCLE.FAILED, { reason: e.message });
         await logAgent(id, 'failed', e.message, { stack: e.stack });
         return null;
@@ -221,7 +235,13 @@ async function retireLegacyDefaultAgents() {
 
 async function createAgent({ name, discord_token, deepseek_token, model_config, model_provider, model_credentials, personality = '', token_type = 'bot' }) {
     const cfg = require('./config');
-    const resolvedModelConfig = model_config || (model_provider ? { provider: model_provider, model: model_provider === 'qwen' ? 'qwen3.8-max' : 'default', credentials: model_credentials || {} } : (deepseek_token ? { provider: 'deepseek', model: 'default', credentials: { token: deepseek_token } } : null));
+    let resolvedModelConfig = model_config;
+    if (!resolvedModelConfig && model_provider) {
+        const { getProviderMeta } = require('./providers');
+        const meta = getProviderMeta(model_provider);
+        resolvedModelConfig = { provider: model_provider, model: meta.defaultModel || 'default', credentials: model_credentials || {} };
+    }
+    if (!resolvedModelConfig && deepseek_token) resolvedModelConfig = { provider: 'deepseek', model: 'default', credentials: { token: deepseek_token } };
     const doc = { name, discord_token, deepseek_token, model_config: resolvedModelConfig, personality, token_type, status: LIFECYCLE.STOPPED, created_at: new Date(), updated_at: new Date() };
     const res = await cfg.agents_col.insertOne(doc);
     return { ...doc, _id: res.insertedId };
@@ -247,7 +267,7 @@ async function startManagerBot() {
         return null;
     }
     managerClient = createManagerClient();
-    managerClient.once('ready', async () => {
+    managerClient.once('clientReady', async () => {
         console.log(`✅ Manager Bot ready as ${managerClient.user.tag}`);
         await registerDashboardCommands(managerClient, DISCORD_TOKEN).catch((error) => console.error('❌ فشل تسجيل أوامر Dashboard:', error));
     });
@@ -299,6 +319,7 @@ module.exports = {
     deleteAgent,
     setAgentStatus,
     logAgent,
+    isNonRetryableLoginError,
     notify,
     bootAgents,
     get managerClient() { return managerClient; },
