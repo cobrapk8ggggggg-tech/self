@@ -8,6 +8,13 @@
 
 'use strict';
 
+
+// FIX: Force load crypto globally to fix MongoDB error
+if (typeof global.crypto === 'undefined') {
+    global.crypto = require('crypto');
+}
+// End Fix
+
 const { ObjectId } = require('mongodb');
 const { Client, GatewayIntentBits, Partials, REST, Routes } = require('discord.js');
 const { DISCORD_TOKEN, connectMongo } = require('./config');
