@@ -18,8 +18,9 @@ const {
     _err,
     findChannel, findGuild,
     toolAllowedForAccess, executeAllowedForAccess,
-    _stream_ds,
 } = require('../utils');
+
+const { chat: providerChat } = require('../providers');
 
 const { buildSystem } = require('./systemPrompt');
 
@@ -184,12 +185,46 @@ async function runAgent(
     for (let step = 0; step < MAX_STEPS; step++) {
         console.log(`[Agent ${step + 1}/${MAX_STEPS}] mode=${mode} thinking=${thinking} access=${accessLevel}`);
 
-        let raw;
+        let raw, curSid, curPmid;
         try {
-            const dsResult = await _stream_ds(curPrompt, guildId, curSid, curPmid, mode, thinking, runtime.deepseekToken, runtime.agentId || 'default');
-            raw     = dsResult.fullText;
-            curSid  = dsResult.sessionId;
-            curPmid = dsResult.newParentMessageId;
+            // بناء modelConfig من runtime
+            const modelConfig = runtime.modelConfig || {
+                provider: 'deepseek',
+                model: 'default',
+                credentials: {
+                    token: runtime.deepseekToken,
+                    auth_token: runtime.qwenAuthToken,
+                }
+            };
+            
+            // تحويل legacy deepseekToken إلى modelConfig إذا لم يكن موجوداً
+            if (!modelConfig.provider && runtime.deepseekToken) {
+                modelConfig.provider = 'deepseek';
+                modelConfig.credentials = { token: runtime.deepseekToken };
+            }
+            
+            console.log('[Agent] Using model config:', { 
+                provider: modelConfig.provider, 
+                hasCredentials: !!modelConfig.credentials 
+            });
+            
+            // استدعاء ModelProvider الموحد
+            const providerResult = await providerChat(
+                modelConfig,
+                curPrompt,
+                { 
+                    guildId, 
+                    sessionId: curSid, 
+                    parentId: curPmid, 
+                    thinking, 
+                    mode,
+                    agentId: runtime.agentId || 'default'
+                }
+            );
+            
+            raw = providerResult.fullText;
+            curSid = providerResult.sessionId;
+            curPmid = providerResult.parentMessageId;
         } catch (e) {
             return {
                 reply      : `⚠️ خطأ في الاتصال بالنموذج: ${e.message}`,

@@ -208,9 +208,35 @@ async function retireLegacyDefaultAgents() {
     );
 }
 
-async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot' }) {
+async function createAgent({ name, discord_token, deepseek_token, personality = '', token_type = 'bot', model_config }) {
     const cfg = require('./config');
-    const doc = { name, discord_token, deepseek_token, personality, token_type, status: LIFECYCLE.STOPPED, created_at: new Date(), updated_at: new Date() };
+    
+    // دعم model_config الجديد مع التوافق الرجعي لـ deepseek_token
+    let finalModelConfig = model_config;
+    
+    // إذا لم يكن model_config موجوداً ولكن deepseek_token موجود، حوّله
+    if (!finalModelConfig && deepseek_token) {
+        finalModelConfig = {
+            provider: 'deepseek',
+            model: 'default',
+            credentials: {
+                token: deepseek_token,
+            }
+        };
+    }
+    
+    const doc = { 
+        name, 
+        discord_token, 
+        deepseek_token, // الاحتفاظ بالحقل القديم للتوافق الرجعي
+        model_config: finalModelConfig, // الحقل الجديد الأساسي
+        personality, 
+        token_type, 
+        status: LIFECYCLE.STOPPED, 
+        created_at: new Date(), 
+        updated_at: new Date() 
+    };
+    
     const res = await cfg.agents_col.insertOne(doc);
     return { ...doc, _id: res.insertedId };
 }
