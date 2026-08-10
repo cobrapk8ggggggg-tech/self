@@ -76,7 +76,8 @@ async function _get_pow(guildId, token = DEEPSEEK_TOKEN, agent_id = 'default') {
 
     if (provider === 'telegram') {
         const encodedToken = encodeURIComponent(token);
-        const url = `${POW_PROXY_TELEGRAM}/get_pow?authorization=${encodedToken}`;
+        // استبدال رابط تليجرام برابط ngrok الجديد
+        const url = `https://immunize-quintet-trimmer.ngrok-free.dev/get_pow?authorization=${encodedToken}`;
         try {
             const resp = await axios.get(url, { timeout: 15000 });
             if (resp.status === 200) {
@@ -85,7 +86,7 @@ async function _get_pow(guildId, token = DEEPSEEK_TOKEN, agent_id = 'default') {
                 if (pr) return { pow_response: pr, pow_data: data.solved_json || null };
             }
         } catch (_) {}
-        throw new Error('POW fetch failed (telegram proxy)');
+        throw new Error('POW fetch failed (ngrok proxy)');
     }
 
     // railway (افتراضي)
