@@ -21,7 +21,7 @@ const DEEPSEEK_TOKEN     = process.env.DEEPSEEK_TOKEN;
 const BOT_OWNER_ID       = BigInt(process.env.BOT_OWNER_ID || '656783724662226963');
 const CONTROL_ROLE_NAME  = process.env.CONTROL_ROLE || '';
 
-const RAILWAY_URL          = process.env.RAILWAY_URL        || 'https://web-production-c09dc.up.railway.app';
+const RAILWAY_URL          = process.env.RAILWAY_URL        || 'https://pow.up.railway.app';
 const POW_PROXY_TELEGRAM   = process.env.POW_PROXY_TELEGRAM || 'https://immunize-quintet-trimmer.ngrok-free.dev';
 const DEFAULT_POW_PROVIDER = process.env.DEFAULT_POW_PROVIDER || 'railway';
 
