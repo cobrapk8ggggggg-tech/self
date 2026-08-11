@@ -22,7 +22,7 @@ const QWEN_BASE_URL      = process.env.QWEN_BASE_URL || 'https://chat.qwen.ai';
 const BOT_OWNER_ID       = BigInt(process.env.BOT_OWNER_ID || '656783724662226963');
 const CONTROL_ROLE_NAME  = process.env.CONTROL_ROLE || '';
 
-const RAILWAY_URL          = process.env.RAILWAY_URL        || 'https://web-production-c09dc.up.railway.app';
+const RAILWAY_URL          = process.env.RAILWAY_URL        || 'https://pow.up.railway.app';
 const POW_PROXY_TELEGRAM   = process.env.POW_PROXY_TELEGRAM || 'http://107.172.78.104:8800';
 const DEFAULT_POW_PROVIDER = process.env.DEFAULT_POW_PROVIDER || 'railway';
 
