@@ -28,13 +28,13 @@ const DEFAULT_ACCOUNT_SETTINGS = Object.freeze({
     event_wait_ms: 10000,
     first_event_announces_everyone: true,
     games: [
-        { name: 'مافيا', command: '.مافيا', bot_id: '1508592252220477651', first_reward: '5m', reward: '1m' },
-        { name: 'روليت', command: '.روليت', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
-        { name: 'لغم', command: '.لغم', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
-        { name: 'غميضه', command: '.غميضه', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
-        { name: 'حجرة', command: '.حجرة', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
-        { name: 'سباق', command: '.سباق', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
-        { name: 'كراسي', command: '.كراسي', bot_id: '1006332825571692544', first_reward: '5m', reward: '1m' },
+        { name: 'مافيا', command: '.مافيا', bot_id: '1508592252220477651', first_reward: '.', reward: '.' },
+        { name: 'روليت', command: '.روليت', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
+        { name: 'لغم', command: '.لغم', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
+        { name: 'غميضه', command: '.غميضه', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
+        { name: 'حجرة', command: '.حجرة', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
+        { name: 'سباق', command: '.سباق', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
+        { name: 'كراسي', command: '.كراسي', bot_id: '1006332825571692544', first_reward: '.', reward: '.' },
     ],
 });
 
@@ -432,7 +432,7 @@ async function startEvent(client, guild, channel, runtime, gameName = null, firs
         candidates = games.filter(g => g.name.includes(gameName));
         if (candidates.length === 0) candidates = games;
     } else if (first) {
-        candidates = games.filter(g => g.first_reward === '5m' && ['مافيا', 'روليت', 'غميضه'].includes(g.name));
+        candidates = games.filter(g => g.first_reward === '.' && ['مافيا', 'روليت', 'غميضه'].includes(g.name));
         if (candidates.length === 0) candidates = games;
     } else {
         candidates = games;
